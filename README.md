@@ -40,6 +40,12 @@ The same `dist/index.html` also works on a static web server, including in a sub
 
 Earlier builds used external ES modules and absolute `/assets/` paths, which required HTTP serving and could not be opened directly as files. The current build embeds a classic script after the page's DOM and all styles in the document head, avoiding local-file module and CORS restrictions.
 
+### GitHub Pages
+
+The publication target is **https://rene-avi.github.io/schwarzschild-radius/**. The site becomes available after a successful **Deploy Event Horizon to GitHub Pages** workflow run; a saved workflow alone does not mean it is live.
+
+The workflow in `.github/workflows/pages.yml` runs on pushes to `main` and can also be started manually from GitHub Actions. It installs the locked dependencies with Node.js 24, runs the tests, builds `dist/`, and deploys that directory. In the repository's **Settings → Pages**, the deployment source must be **GitHub Actions**. Deployment uses GitHub's built-in token and requires no additional secrets. Open the resulting HTTPS address directly in Safari or Chrome on a phone, avoiding local-file preview limitations.
+
 ## Explore
 
 | Action | Control |

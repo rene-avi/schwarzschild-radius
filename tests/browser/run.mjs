@@ -8,6 +8,7 @@ import { chromium } from 'playwright';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const outDir = join(root, 'tmp/browser-out');
+const SOFTWARE_DEVICE_SCALE_FACTOR = 0.25;
 // Only rendered-pixel assertions require hardware GL.
 const gpuChecks = new Set([
   'observer shadow measured on pixels at eight azimuths',
@@ -26,6 +27,8 @@ let browser;
 let passed = 0;
 let failed = 0;
 let skipped = 0;
+let checkLoopStarted;
+let checkLoopElapsed = 0;
 
 try {
   await mkdir(join(root, 'tmp'), { recursive: true });
@@ -66,7 +69,9 @@ try {
   }
   const softwareRenderer = /swiftshader|llvmpipe/i.test(renderer);
   console.log(`Renderer: ${renderer}`);
+  if (softwareRenderer) console.log(`Software renderer: device pixel ratio ${SOFTWARE_DEVICE_SCALE_FACTOR} for all checks`);
   const modules = (await readdir(new URL('./checks/', import.meta.url))).filter(name => name.endsWith('.mjs')).sort();
+  checkLoopStarted = performance.now();
   for (const name of modules) {
     const { checks } = await import(new URL(`./checks/${name}`, import.meta.url));
     for (const definition of checks) {
@@ -76,7 +81,12 @@ try {
         console.log(`skip ${check.name} (software renderer)`);
         continue;
       }
-      const context = await browser.newContext({ viewport: check.viewport || { width: 1440, height: 900 }, ...check.contextOptions });
+      const checkStarted = performance.now();
+      const context = await browser.newContext({
+        viewport: check.viewport || { width: 1440, height: 900 },
+        ...check.contextOptions,
+        ...(softwareRenderer ? { deviceScaleFactor: SOFTWARE_DEVICE_SCALE_FACTOR } : {}),
+      });
       const page = await context.newPage();
       page.setDefaultTimeout(softwareRenderer ? 60000 : 15000);
       const audit = { consoleErrors: [], foreignRequests: [] };
@@ -95,12 +105,12 @@ try {
         assert.deepEqual(audit.consoleErrors, [], 'console or page errors');
         assert.deepEqual(audit.foreignRequests, [], 'foreign-origin requests');
         passed++;
-        console.log(`ok ${check.name}`);
+        console.log(`ok ${check.name} (${((performance.now() - checkStarted) / 1000).toFixed(1)} s)`);
       } catch (error) {
         failed++;
         const screenshot = join(outDir, `${check.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.png`);
         await page.screenshot({ path: screenshot }).catch(() => {});
-        console.error(`FAIL ${check.name}: ${error.stack || error}\nScreenshot: ${screenshot}`);
+        console.error(`FAIL ${check.name} (${((performance.now() - checkStarted) / 1000).toFixed(1)} s): ${error.stack || error}\nScreenshot: ${screenshot}`);
       } finally {
         await page.close();
         await context.close();
@@ -111,6 +121,7 @@ try {
   failed++;
   console.error(`FAIL browser setup: ${error.stack || error}`);
 } finally {
+  if (checkLoopStarted !== undefined) checkLoopElapsed = (performance.now() - checkLoopStarted) / 1000;
   try { await browser?.close(); } catch (error) { failed++; console.error(`FAIL browser cleanup: ${error}`); }
   try { if (server?.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   catch (error) { failed++; console.error(`FAIL server cleanup: ${error}`); }
@@ -121,5 +132,6 @@ if (passed + failed === 0) {
   failed++;
   console.error('FAIL no browser checks executed');
 }
+console.log(`Elapsed ${checkLoopElapsed.toFixed(1)} s`);
 console.log(`TOTAL ${passed + failed + skipped} pass ${passed} fail ${failed} skip ${skipped}`);
 process.exitCode = failed > 0 || passed === 0 ? 1 : 0;

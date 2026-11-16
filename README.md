@@ -29,7 +29,7 @@ Chromium installation is a one-time setup for the installed Playwright version. 
 
 ### Continuous integration and GitHub Pages
 
-[CI](.github/workflows/ci.yml) runs on pushes and pull requests to every branch with read-only repository permissions. Its `test` job installs dependencies, runs `npm test`, builds and uploads `dist/index.html` as the **event-horizon-standalone** artifact. Its separate `browser` job installs Chromium and runs `npm run test:browser`. CI does not require GitHub Pages.
+[CI](.github/workflows/ci.yml) runs on pushes and pull requests to every branch with read-only repository permissions. Its `test` job installs dependencies, runs `npm test`, builds and uploads `dist/index.html` as the **event-horizon-standalone** artifact. Its separate `browser` job installs Chromium, runs `npm run test:browser` and uploads available screenshots and diagnostics from `tmp/browser-out/` as the **browser-out** artifact, even when checks fail. CI does not require GitHub Pages.
 
 [Pages deployment](.github/workflows/pages.yml) builds and deploys `dist/` on pushes to `main` or manual dispatch. First enable **Settings → Pages → Source: GitHub Actions** in the repository. A successful deployment publishes to [rene-avi.github.io/schwarzschild-radius](https://rene-avi.github.io/schwarzschild-radius/); the workflow uses GitHub's built-in token. Pages setup or deployment failures do not prevent the separate CI workflow from running.
 
@@ -113,7 +113,7 @@ Bent rays can cross the emitting disk repeatedly, showing its far side above and
 
 `npm run test:browser` checks responsive controls, keyboard focus, presets, help, quality modes, real two-finger touch, readable HUD text, console errors and foreign requests. With hardware GL it also measures rendered shadow boundaries, star shape/density/brightness, highlights and colour, and probe visibility, size and received pixel pulses. Picture checks wait for exposure to settle before measuring. Screenshots and numerical diagnostics are saved under `tmp/browser-out/`.
 
-The runner prints the WebGL renderer name. On **SwiftShader** or **llvmpipe** it skips only checks marked `gpu: true`, printing `skip <name> (software renderer)` for each; DOM, input and text-size checks still run. The summary is `TOTAL <n> pass <p> fail <f> skip <s>`, including skipped checks in the total, and zero executed checks fails. To launch without the macOS GPU flags, use:
+The runner prints the WebGL renderer name. On **SwiftShader** or **llvmpipe** it skips only checks marked `gpu: true`, printing `skip <name> (software renderer)` for each; DOM, input and text-size checks still run. On a software renderer it lowers the device pixel ratio to 0.25 so the page stays responsive, while CSS layout and input are unaffected. Every executed check prints its wall time. The summary is `TOTAL <n> pass <p> fail <f> skip <s>`, including skipped checks in the total, and zero executed checks fails. To launch without the macOS GPU flags, use:
 
 ```sh
 EH_FORCE_SOFTWARE=1 node tests/browser/run.mjs

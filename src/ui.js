@@ -1,4 +1,5 @@
 import { SHORTCUTS } from './shortcuts.js';
+import { spinFromDelta } from './kerr.js';
 
 const icons = {
   orbit: '<ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(-35 12 12)"/><circle cx="12" cy="12" r="3"/>',
@@ -33,9 +34,16 @@ const clock = (seconds = 0) => {
   return `${h}:${m}:${sec}.${cs}`;
 };
 
+function spinReadout(delta) {
+  if (delta >= 1e-3) return spinFromDelta(delta).toFixed(3);
+  const [coefficient, exponent] = delta.toExponential(1).split('e');
+  const superscripts = { '-': '⁻', '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹' };
+  return `1 − ${coefficient}×10${String(Number(exponent)).replace(/[-0-9]/g, digit => superscripts[digit])}`;
+}
+
 const controls = [
   { key: 'mass', label: 'Mass', min: 1, max: 9, step: .01, unit: 'M☉', from: Math.log10, to: v => 10 ** v, format: v => compact(v, 1) },
-  { key: 'spin', label: 'Spin', min: 0, max: .99, step: .01, unit: 'a*', format: v => v.toFixed(2) },
+  { key: 'spinDelta', label: 'Spin', min: 0, max: 14, step: .01, unit: 'a*', from: v => -Math.log10(v), to: v => 10 ** -v, format: spinReadout, relative: true },
   { key: 'temperature', label: 'Disk temperature', min: 2000, max: 20000, step: 100, unit: 'K', format: v => Math.round(v).toLocaleString('en-US') },
   { key: 'tilt', label: 'Disk tilt', min: -70, max: 70, step: 1, unit: '°', format: v => Math.round(v).toString() },
   { key: 'lensing', label: 'Lensing strength', min: 0, max: 2, step: .01, unit: '×', format: v => v.toFixed(2) },
@@ -69,7 +77,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
     <button class="panel-toggle icon-button" aria-label="Toggle simulation controls" aria-expanded="true">${icon('sliders')}</button>
     <aside class="control-panel" aria-label="Simulation controls">
       <div class="panel-heading"><span class="eyebrow">SIMULATION</span><span class="panel-number">01 / CONTROLS</span></div>
-      <div class="preset-tabs" role="group" aria-label="Black hole preset">${Object.entries(presets).map(([id, p]) => `<button data-preset="${id}" aria-pressed="${id === initialPreset}">${p.name}</button>`).join('')}</div>
+      <div class="preset-tabs world-presets" role="group" aria-label="Black hole preset">${Object.entries(presets).map(([id, p]) => `<button data-preset="${id}" aria-pressed="${id === initialPreset}">${p.name}</button>`).join('')}</div>
       <div class="quality-heading eyebrow">QUALITY</div>
       <div class="preset-tabs quality-tabs" role="group" aria-label="Quality">${['auto', 'high', 'balanced', 'performance'].map(mode => `<button data-quality="${mode}" aria-pressed="${mode === 'auto'}">${mode[0].toUpperCase() + mode.slice(1)}</button>`).join('')}</div>
       <div class="parameter-list">${controls.map(c => `<div class="parameter"><div class="parameter-heading"><label for="param-${c.key}">${c.label}</label><span class="parameter-output"><output for="param-${c.key}" data-control-output="${c.key}">—</output><span class="unit">${c.unit}</span></span></div><input id="param-${c.key}" name="${c.key}" type="range" min="${c.min}" max="${c.max}" step="${c.step}" aria-label="${c.label}"></div>`).join('')}</div>
@@ -135,8 +143,13 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
     if (readouts[name] && readouts[name].textContent !== value) readouts[name].textContent = value;
   }
 
-  function setControl(c, value) {
+  function controlPosition(c, value) {
     const raw = c.from ? c.from(value) : value;
+    return Math.max(c.min, Math.min(c.max, c.min + Math.round((raw - c.min) / c.step) * c.step));
+  }
+
+  function setControl(c, value) {
+    const raw = controlPosition(c, value);
     inputs[c.key].value = raw;
     inputs[c.key].style.setProperty('--fill', `${Math.max(0, Math.min(100, (raw - c.min) / (c.max - c.min) * 100))}%`);
     outputs[c.key].value = c.format(value);
@@ -144,10 +157,18 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   }
 
   controls.forEach(c => inputs[c.key].addEventListener('input', () => {
-    const value = c.to ? c.to(Number(inputs[c.key].value)) : Number(inputs[c.key].value);
+    const position = Number(inputs[c.key].value);
+    const presetValue = presets[selectedPreset][c.key];
+    // A transformed preset retains its exact value at its snapped thumb position.
+    const atPreset = c.from && c.to && Math.abs(position - controlPosition(c, presetValue)) < c.step / 2;
+    const value = atPreset ? presetValue : c.to ? c.to(position) : position;
     setControl(c, value);
     parameterValues[c.key] = value;
-    const custom = controls.some(control => Math.abs(parameterValues[control.key] - presets[selectedPreset][control.key]) > 1e-9 * Math.max(1, Math.abs(presets[selectedPreset][control.key])));
+    const custom = controls.some(control => {
+      const expected = presets[selectedPreset][control.key];
+      const scale = control.relative ? Math.abs(expected) : Math.max(1, Math.abs(expected));
+      return Math.abs(parameterValues[control.key] - expected) > 1e-9 * scale;
+    });
     presetButtons.forEach(b => b.setAttribute('aria-pressed', String(!custom && b.dataset.preset === selectedPreset)));
     write('object-description', custom ? 'Custom parameters' : presetDescription(selectedPreset));
     onChange(c.key, value);
@@ -164,6 +185,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   }
 
   function presetDescription(id) {
+    if (id === 'deep') return 'Near-extremal spin';
     return id === 'quiet' ? 'A quiet stellar remnant' : id === 'sagittarius' ? 'At the heart of the Milky Way' : 'Supermassive black hole';
   }
 

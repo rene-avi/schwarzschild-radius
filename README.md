@@ -62,13 +62,13 @@ Shortcuts also work with a focused range slider; arrows, Home, End, PageUp and P
 | Parameter | Range | Effect |
 | --- | --- | --- |
 | Mass | 10–1,000,000,000 M☉, logarithmic | Physical size in the HUD; normalized geometry stays unchanged |
-| Spin | 0–0.99 | Illustrative disk motion, inner edge and beaming |
+| Spin | Logarithmic in 1 − a, from a = 0 towards a = 1 − 10⁻¹⁴ | Kerr world clocks; illustrative disk motion, inner edge and beaming saturate at a = 0.99 |
 | Disk temperature | 2,000–20,000 K | Reference emission temperature |
 | Disk tilt | −70° to +70° | Disk-plane orientation |
 | Lensing strength | 0–2× | Effective Schwarzschild radius for rays and the observer clock; 1× is the physical reference |
 | Time scale | 0–4× | Disk, clock and probe simulation speed |
 
-**Gargantua**, **Sagittarius A*** and **Quiet** are visual presets, not measured disk reconstructions. Selecting one restores its parameters and camera and clears the probe. Editing a parameter shows **Custom parameters**; restoring all of that preset's values restores its selected state.
+**Gargantua**, **Sagittarius A***, **Quiet** and **Deep orbit** are parameter presets, not measured disk reconstructions. Deep orbit uses near-extremal spin (1 − a = 1.3×10⁻¹⁴), 100 million M☉, 6,500 K, 6° tilt, lensing 1× and time scale 1×. Selecting a preset restores its exact stored parameters and camera and clears the probe. Editing a parameter shows **Custom parameters**; returning every slider to that preset's thumb positions restores its selected state and exact stored values, including off-grid mass and spin values.
 
 **Auto** starts at 100% render scale, adapts down to a 40% floor under sustained load and tries to recover when capacity returns. It tests whether lower resolution improves throughput before treating a slow rate as a frame cap. Fixed **High** (100%), **Balanced** (76%) and **Performance** (52%) disable adaptation and use progressively smaller ray-integration budgets. Returning to Auto starts at 100%. No mode guarantees a particular frame rate.
 
@@ -82,7 +82,7 @@ The beacon flashes at each whole unit of onboard proper time. Received flashes b
 
 ## Physics and rendering
 
-Distances use Schwarzschild radii, `rₛ = 2GM/c²`, with `rₛ = c = 1` in the equations. One solar mass gives about 2.953 km. Dimensionless clock values convert to SI seconds by multiplying by `rₛ/c`; at time scale 1, one simulation second is one such unit. Mass changes the physical scale without changing the dimensionless image or animation rate. **SHADOW** reports the fraction of the entire local sky covered by the shadow.
+Rendered distances use Schwarzschild radii, `rₛ = 2GM/c²`, with `rₛ = c = 1` in the rendering and probe equations. One solar mass gives about 2.953 km. Dimensionless observer/probe clock values convert to SI seconds by multiplying by `rₛ/c`; at time scale 1, one simulation second is one such unit. Mass changes the physical scale without changing the dimensionless image or animation rate. **SHADOW** reports the fraction of the entire local sky covered by the shadow.
 
 | Component | Model and limits |
 | --- | --- |
@@ -90,8 +90,10 @@ Distances use Schwarzschild radii, `rₛ = 2GM/c²`, with `rₛ = c = 1` in the 
 | Ray integration | Exact Schwarzschild null-geodesic equation at lensing 1×, solved approximately with adaptive RK4 steps and finite quality budgets. Capture is analytic; outgoing rays and distant weak deflection use second-order approximations. |
 | Probe trajectory and clocks | Exact radial Schwarzschild free fall from rest at 7 rₛ, using the analytic cycloid and Schwarzschild coordinate time, with numerical inversion to find the received event. The main observer clock uses the exact static lapse √(1 − 1/r) at lensing 1×. |
 | Probe signal and delay | Exact outward radial photon model for a fixed static receiver, including gravitational and infaller Doppler shifts and retarded light-travel delay. The off-axis craft image reuses that signal history; it does not solve separate delays for bent rays or reception by a moving observer. |
-| World orbits and clocks (Kerr) | `src/kerr.js` provides exact prograde equatorial circular orbits and clocks of the Kerr metric in gravitational units (M = 1, rₛ = 2M). The rendered image, observer and probe remain Schwarzschild. The module is not yet used by the app. |
-| Spin | Illustrative disk rotation, inner edge and beaming; the spacetime remains Schwarzschild, with no Kerr frame dragging. |
+| World orbits and clocks (Kerr) | `src/worlds.js` and `src/ledger.js` use the exact prograde equatorial circular orbits and clocks from `src/kerr.js` in gravitational units (M = 1, rₛ = 2M). Brink sits on the marginally stable ISCO; Lantern, Far Shore and the ship orbit at 12 M, 120 M and 400 M. Home is the distant static coordinate clock. |
+| Kerr worlds and the picture | Kerr orbit radii do not map into the Schwarzschild picture. In Deep orbit, Brink lies at about 0.50002 rₛ, inside the drawn horizon. The rendered image, observer and probe remain Schwarzschild. |
+| Time ledger | Accumulates Home, crew and each orbiting body's proper time in SI seconds, independently of mass; mass sets orbit periods through GM/c³. Transfers are instantaneous and free. Spin changes affect future increments only. The app initializes the ledger at the ship; it does not yet advance automatically or display it. |
+| Rendered spin | Illustrative disk rotation, inner edge and beaming; the picture remains Schwarzschild, with no Kerr frame dragging. |
 | Disk emission, colours and exposure | Illustrative turbulence, velocity prescription, blackbody colour fit, bounded sky brightness, added photon-ring glow, bloom and automatic exposure. These are display models, not a full radiative-transfer solution; probe glow, trails and signal-loss cutoff are also display choices. |
 | Lensing-strength slider | Illustrative variation of the effective radius for ray geometry and static frequency shifts; use 1× for the Schwarzschild reference. Probe physics always uses rₛ = 1 independently of this slider. |
 
@@ -104,13 +106,14 @@ Bent rays can cross the emitting disk repeatedly, showing its far side above and
 | `src/main.js`, `src/quality.js` | Loop, actions, telemetry and adaptive/fixed quality |
 | `src/scene.js`, `src/shaders/blackhole.js`, `src/shaders/post.js` | Render pipeline, rays, procedural scene and post-processing |
 | `src/physics.js`, `src/geodesic.js` | Units, presets, exact radial probe model, null-ray reference and shared constants |
+| `src/kerr.js`, `src/worlds.js`, `src/ledger.js` | Exact Kerr circular orbits, world clocks/periods and accumulated crew/Home/body times |
 | `src/camera.js` | Orbit, touch, fly-in and static-observer gaze |
 | `src/ui.js`, `src/style.css`, `src/shortcuts.js` | Responsive HUD, controls, help and shared keyboard policy |
 | `build/standalone.js` | Relocatable single-HTML production bundle |
 | `tests/*.test.js`, `tests/run.mjs` | Node checks and in-process test runner |
 | `tests/browser/run.mjs`, `tests/browser/checks/`, `tests/browser/pixels.mjs` | Standalone Chromium checks, screenshots and pixel measurements |
 
-`npm test` checks units, probe geodesics/clocks/signals/delay, local optics, shadow boundaries, escape directions, camera behavior, presets, keyboard/README consistency, exposure utilities and simulated quality-controller scenarios. The standalone regression builds the application and checks that only one HTML file remains, with embedded CSS and JavaScript that parses as a classic script. Its summary is `TOTAL <n> pass <p> fail <f>`; any failure or zero tests gives a nonzero exit.
+`npm test` checks units, probe geodesics/clocks/signals/delay, local optics, shadow boundaries, escape directions, camera behavior, Kerr orbits, world stability/periods, ledger accumulation/formatting, presets, keyboard/README consistency, exposure utilities and simulated quality-controller scenarios. The standalone regression builds the application and checks that only one HTML file remains, with embedded CSS and JavaScript that parses as a classic script. Its summary is `TOTAL <n> pass <p> fail <f>`; any failure or zero tests gives a nonzero exit.
 
 `npm run test:browser` checks responsive controls, keyboard focus, presets, help, quality modes, real two-finger touch, readable HUD text, console errors and foreign requests. With hardware GL it also measures rendered shadow boundaries, star shape/density/brightness, highlights and colour, and probe visibility, size and received pixel pulses. Picture checks wait for exposure to settle before measuring. Screenshots and numerical diagnostics are saved under `tmp/browser-out/`.
 
@@ -122,4 +125,4 @@ EH_FORCE_SOFTWARE=1 node tests/browser/run.mjs
 
 Skipping depends on the detected renderer, not the environment variable alone. Software-renderer CI covers interaction and startup; visual acceptance still requires inspecting the default view, presets, fly-in, alignment and probe on hardware GL. No automated checks impose frame-rate or wall-clock performance acceptance thresholds.
 
-For manual inspection, orbit to reveal the secondary disk image, compare the bright and dim sides, try each preset, release a probe and fly toward the final hover. **H** hides the HUD for screenshots or a browser/screen recording. `window.eventHorizon.getState()` exposes copied telemetry; only `?debug=1` adds bounded camera/layer/pause/probe-step controls for the browser checks.
+For manual inspection, orbit to reveal the secondary disk image, compare the bright and dim sides, try each preset, release a probe and fly toward the final hover. **H** hides the HUD for screenshots or a browser/screen recording. `window.eventHorizon.getState()` exposes copied telemetry, including `settings.spinDelta` and `ledger` (`location`, `homeSeconds`, `crewSeconds`, `bodySeconds`). Only `?debug=1` adds camera/layer/pause/probe-step controls and ledger helpers `advanceCrew(seconds)` and `travel(location)` on `window.eventHorizon.debug`.

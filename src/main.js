@@ -5,9 +5,16 @@ import { PRESETS, schwarzschildRadius, timeDilation, createProbe, updateProbe } 
 import { createUI } from './ui.js';
 import { QualityController } from './quality.js';
 import { allowsShortcut, shortcutForCode, shortcutNotice } from './shortcuts.js';
+import { spinFromDelta } from './kerr.js';
+import { reset as resetLedger, advance as advanceLedger, travel as travelLedger } from './ledger.js';
 
 const canvas = document.querySelector('#universe');
 const settings = { ...PRESETS.gargantua };
+function refreshVisualSpin() {
+  settings.spin = Math.min(0.99, spinFromDelta(settings.spinDelta));
+}
+refreshVisualSpin();
+let ledger = resetLedger();
 let paused = false;
 let probe = null;
 let simulationTime = 0;
@@ -77,6 +84,7 @@ ui = createUI({
   onPreset(id) {
     if (!PRESETS[id]) return;
     Object.assign(settings, PRESETS[id]);
+    refreshVisualSpin();
     camera.setLensing(settings.lensing);
     camera.setDisk(settings.tilt, settings.spin);
     camera.reset();
@@ -86,8 +94,9 @@ ui = createUI({
   },
   onChange(key, value) {
     if (key in settings && Number.isFinite(value)) settings[key] = value;
+    if (key === 'spinDelta') refreshVisualSpin();
     if (key === 'lensing') camera.setLensing(settings.lensing);
-    if (key === 'tilt' || key === 'spin') camera.setDisk(settings.tilt, settings.spin);
+    if (key === 'tilt' || key === 'spinDelta') camera.setDisk(settings.tilt, settings.spin);
   },
   onQuality(mode) { applyQuality(qualityController.setMode(mode)); },
   onAction: action,
@@ -191,6 +200,8 @@ const debug = new URLSearchParams(window.location.search).get('debug') === '1' ?
   },
   setPaused(value) { if (typeof value === 'boolean') paused = value; },
   advanceProbe(dt) { if (probe) updateProbe(probe, dt, settings.timeScale); },
+  advanceCrew(seconds) { ledger = advanceLedger(ledger, seconds, settings.spinDelta); },
+  travel(location) { ledger = travelLedger(ledger, location); },
 }) : null;
 
 // Debug mutation exists only behind the explicit flag; normal telemetry is copied.
@@ -200,6 +211,9 @@ Object.defineProperty(window, 'eventHorizon', {
     mode: camera.mode, radius: camera.radius, theta: camera.theta, elevation: camera.elevation,
     dilation: timeDilation(camera.radius, settings.lensing), gazeYaw: camera.gazeYaw, gazePitch: camera.gazePitch,
     shadowFraction: camera.shadowFraction,
+  }, ledger: {
+    location: ledger.location, homeSeconds: ledger.homeSeconds, crewSeconds: ledger.crewSeconds,
+    bodySeconds: { ...ledger.bodySeconds },
   }, probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })) } : null, paused, clock, fps, renderedFrames,
   exposure: scene?.meter.exposure,
   quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),

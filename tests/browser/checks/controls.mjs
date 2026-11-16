@@ -63,7 +63,7 @@ export const checks = [
   {
     name: 'D2 shortcuts and native keys on a focused slider',
     async run({ page }) {
-      const slider = page.locator('#param-spin');
+      const slider = page.locator('#param-spinDelta');
       await slider.click();
       await page.keyboard.press('KeyP');
       assert.ok((await state(page)).probe);
@@ -76,6 +76,7 @@ export const checks = [
       const before = await state(page);
       const value = Number(await slider.inputValue());
       await page.keyboard.press('ArrowRight');
+      await page.waitForFunction(previous => Number(document.querySelector('#param-spinDelta').value) > previous, value);
       const after = await state(page);
       assert.ok(Number(await slider.inputValue()) > value);
       assert.equal(after.paused, before.paused);
@@ -136,15 +137,92 @@ export const checks = [
   {
     name: 'D3 custom parameters and preset restoration',
     async run({ page }) {
-      const slider = page.locator('#param-spin');
+      const slider = page.locator('#param-spinDelta');
       await slider.click();
       await page.keyboard.press('Home');
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.spinDelta === 1
+        && document.querySelector('[data-readout="object-description"]').textContent === 'Custom parameters');
+      assert.equal(await page.locator('[data-control-output="spinDelta"]').textContent(), '0.000');
       assert.equal(await page.locator('[data-readout="object-name"]').textContent(), 'Gargantua');
       assert.equal(await page.locator('[data-readout="object-description"]').textContent(), 'Custom parameters');
       assert.equal(await page.locator('[data-preset][aria-pressed="true"]').count(), 0);
       await page.locator('[data-preset="sagittarius"]').click();
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.spinDelta === 0.45
+        && document.querySelector('[data-preset="sagittarius"]').getAttribute('aria-pressed') === 'true');
       assert.equal(await page.locator('[data-readout="object-name"]').textContent(), 'Sagittarius A*');
       assert.equal(await page.locator('[data-readout="object-description"]').textContent(), 'At the heart of the Milky Way');
+      assert.equal(await page.locator('[data-preset="sagittarius"]').getAttribute('aria-pressed'), 'true');
+    },
+  },
+  {
+    name: 'D3 Deep orbit spin restores the exact off-grid preset and wraps four buttons',
+    async run({ page, outDir }) {
+      await page.locator('[data-preset="deep"]').click();
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.spinDelta === 1.3e-14
+        && document.querySelector('[data-readout="object-description"]').textContent === 'Near-extremal spin'
+        && document.querySelector('[data-preset="deep"]').getAttribute('aria-pressed') === 'true');
+      const slider = page.locator('#param-spinDelta');
+      assert.equal(await slider.getAttribute('min'), '0');
+      assert.equal(await slider.getAttribute('max'), '14');
+      assert.equal(await slider.getAttribute('step'), '0.01');
+      assert.equal(Number(await slider.inputValue()), 13.89);
+      assert.equal((await state(page)).settings.spin, 0.99);
+      assert.equal(await page.locator('[data-control-output="spinDelta"]').textContent(), '1 − 1.3×10⁻¹⁴');
+      await slider.focus();
+      await page.keyboard.press('ArrowRight');
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.spinDelta !== 1.3e-14
+        && document.querySelector('[data-readout="object-description"]').textContent === 'Custom parameters'
+        && document.querySelectorAll('[data-preset][aria-pressed="true"]').length === 0);
+      assert.ok(Math.abs((await state(page)).settings.spinDelta - 1.3e-14) > 1e-9 * 1.3e-14);
+      assert.equal(await page.locator('[data-readout="object-description"]').textContent(), 'Custom parameters');
+      assert.equal(await page.locator('[data-preset][aria-pressed="true"]').count(), 0);
+      await page.keyboard.press('ArrowLeft');
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.spinDelta === 1.3e-14
+        && document.querySelector('[data-preset="deep"]').getAttribute('aria-pressed') === 'true'
+        && document.querySelector('[data-control-output="spinDelta"]').textContent === '1 − 1.3×10⁻¹⁴');
+      assert.equal((await state(page)).settings.spinDelta, 1.3e-14);
+      assert.equal(await page.locator('[data-preset="deep"]').getAttribute('aria-pressed'), 'true');
+      for (const width of [1440, 375]) {
+        await page.setViewportSize({ width, height: width === 1440 ? 900 : 812 });
+        if (width === 375) {
+          await page.waitForFunction(() => document.querySelector('.control-panel').inert);
+          await page.locator('.panel-toggle').click();
+        }
+        await panelOpen(page);
+        const buttons = await page.locator('[data-preset]').evaluateAll(elements => elements.map(element => {
+          const { top, left, right, bottom } = element.getBoundingClientRect();
+          return { top, left, right, bottom };
+        }));
+        assert.equal(buttons.length, 4);
+        assert.equal(buttons[0].top, buttons[1].top);
+        assert.equal(buttons[2].top, buttons[3].top);
+        assert.ok(buttons[2].top >= buttons[0].bottom, 'presets wrap into two rows');
+        assert.ok(await page.locator('.control-panel').evaluate(element => element.scrollWidth <= element.clientWidth), 'panel fits horizontally');
+        assert.equal(await page.locator('[data-control-output="spinDelta"]').textContent(), '1 − 1.3×10⁻¹⁴');
+        await page.locator('.control-panel').screenshot({ path: join(outDir, `controls-${width}-deep.png`) });
+      }
+    },
+  },
+  {
+    name: 'D3 Sagittarius mass restores the exact off-grid preset',
+    async run({ page }) {
+      await page.locator('[data-preset="sagittarius"]').click();
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.mass === 4.3e6
+        && document.querySelector('[data-preset="sagittarius"]').getAttribute('aria-pressed') === 'true');
+      const slider = page.locator('#param-mass');
+      const originalPosition = Number(await slider.inputValue());
+      await slider.focus();
+      await page.keyboard.press('ArrowRight');
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.mass !== 4.3e6
+        && document.querySelector('[data-readout="object-description"]').textContent === 'Custom parameters'
+        && document.querySelectorAll('[data-preset][aria-pressed="true"]').length === 0);
+      assert.ok(Number(await slider.inputValue()) > originalPosition);
+      await page.keyboard.press('ArrowLeft');
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.mass === 4.3e6
+        && document.querySelector('[data-preset="sagittarius"]').getAttribute('aria-pressed') === 'true'
+        && document.querySelector('[data-readout="object-description"]').textContent === 'At the heart of the Milky Way');
+      assert.equal((await state(page)).settings.mass, 4.3e6);
+      assert.equal(Number(await slider.inputValue()), originalPosition);
       assert.equal(await page.locator('[data-preset="sagittarius"]').getAttribute('aria-pressed'), 'true');
     },
   },

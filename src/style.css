@@ -74,6 +74,8 @@ h1 { font-size: 31px; line-height: 1.15; font-weight: 400; letter-spacing: -.9px
 .preset-tabs button:nth-child(2) { flex: 1.5; }
 .preset-tabs button[aria-pressed="true"] { background: #a4825f22; color: #ebc49e; box-shadow: 0 0 0 1px #c2996525; }
 .preset-tabs button:hover { color: #fff; }
+.world-presets { flex-wrap: wrap; }
+.world-presets button, .world-presets button:first-child, .world-presets button:nth-child(2) { flex: 1 1 calc(50% - 2px); }
 .quality-heading { font-size: 9px; letter-spacing: 1.2px; margin-bottom: 9px; }
 .quality-tabs button { font-size: 9px; padding: 9px 2px; }
 .quality-tabs button:first-child, .quality-tabs button:nth-child(2) { flex: 1; }

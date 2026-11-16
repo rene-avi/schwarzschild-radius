@@ -29,14 +29,14 @@ export function timeDilation(radius, rs = 1) {
 }
 
 /**
- * Temperature and spin are visual disk parameters, not a Kerr metric solution.
+ * Spin delta sets Kerr clocks; the rendered disk uses a capped illustrative spin.
  * The mass sets the physical scale, while normalized geometry remains stable.
  */
 export const PRESETS = Object.freeze({
   gargantua: Object.freeze({
     name: 'Gargantua',
     mass: 100_000_000,
-    spin: 0.85,
+    spinDelta: 0.15,
     temperature: 7500,
     tilt: 8,
     lensing: 1,
@@ -45,7 +45,7 @@ export const PRESETS = Object.freeze({
   sagittarius: Object.freeze({
     name: 'Sagittarius A*',
     mass: 4_300_000,
-    spin: 0.55,
+    spinDelta: 0.45,
     temperature: 11_000,
     tilt: 18,
     lensing: 1.15,
@@ -54,11 +54,20 @@ export const PRESETS = Object.freeze({
   quiet: Object.freeze({
     name: 'Quiet',
     mass: 10,
-    spin: 0.08,
+    spinDelta: 0.92,
     temperature: 3500,
     tilt: 4,
     lensing: 0.85,
     timeScale: 0.25,
+  }),
+  deep: Object.freeze({
+    name: 'Deep orbit',
+    mass: 100_000_000,
+    spinDelta: 1.3e-14,
+    temperature: 6500,
+    tilt: 6,
+    lensing: 1,
+    timeScale: 1,
   }),
 });
 

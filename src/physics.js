@@ -29,19 +29,6 @@ export function timeDilation(radius, rs = 1) {
 }
 
 /**
- * Special-relativistic frequency multiplier δ = 1 / [γ (1 − β cos θ)].
- * cos θ = +1 means the emitter moves toward the observer. Specific intensity
- * is beamed by δ³; bolometric intensity would use δ⁴.
- */
-export function dopplerFactor(beta, cosTheta) {
-  finite(beta, 'Velocity');
-  finite(cosTheta, 'Direction cosine');
-  if (Math.abs(beta) >= 1) throw new RangeError('Velocity must be slower than light.');
-  if (Math.abs(cosTheta) > 1) throw new RangeError('Direction cosine must be between -1 and 1.');
-  return Math.sqrt(1 - beta * beta) / (1 - beta * cosTheta);
-}
-
-/**
  * Temperature and spin are visual disk parameters, not a Kerr metric solution.
  * The mass sets the physical scale, while normalized geometry remains stable.
  */

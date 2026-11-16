@@ -82,6 +82,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
       <div class="metric"><span class="metric-label">MASS</span><span class="metric-value"><span data-readout="mass">100.00 M</span><small>M☉</small></span></div>
       <div class="metric"><span class="metric-label">SCHWARZSCHILD RADIUS</span><span class="metric-value"><span data-readout="radius">295.33 M</span><small>km</small></span></div>
       <div class="metric"><span class="metric-label">OBSERVER DISTANCE</span><span class="metric-value"><span data-readout="cameraDistance">17.02</span><small>rₛ</small></span></div>
+      <div class="metric"><span class="metric-label">SHADOW</span><span class="metric-value"><span data-readout="shadowFraction">0.3</span><small>% OF SKY</small></span></div>
       <div class="probe-readout"><span class="probe-status"><span class="probe-light"></span><span data-readout="probeState">PROBE STANDBY</span></span><span class="probe-factor" data-readout="probeDilation">—</span></div>
     </section>
 
@@ -96,7 +97,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
 
     <footer class="statusbar"><span class="interaction-hint"><span class="mouse-symbol" aria-hidden="true"></span> DRAG TO ORBIT <span class="hint-separator">·</span> SCROLL TO EXPLORE</span><span class="render-status"><span class="live-dot"></span> <span data-readout="quality">ADAPTIVE QUALITY</span></span><button class="help-button" data-action="help" aria-label="Open keyboard shortcuts">${icon('help')}<span>SHORTCUTS</span></button></footer>
     <div class="notice" role="status" aria-live="polite"></div>
-    <dialog class="help-dialog" aria-label="Keyboard shortcuts"><div class="dialog-heading"><span class="eyebrow">FLIGHT MANUAL</span><button class="close-help icon-button" aria-label="Close keyboard shortcuts">×</button></div><h2 tabindex="-1" autofocus>Explore the edge.</h2><p>Drag to orbit. Scroll to approach. Watch local time slow as gravity grows.</p><dl>${SHORTCUTS.map(shortcut => `<div data-shortcut="${shortcut.code}"><dt>${shortcut.description}</dt><dd><kbd>${shortcut.label}</kbd></dd></div>`).join('')}</dl><p class="help-note">Spin controls disk rotation and beaming. The spacetime model remains Schwarzschild.</p></dialog>
+    <dialog class="help-dialog" aria-label="Keyboard shortcuts"><div class="dialog-heading"><span class="eyebrow">FLIGHT MANUAL</span><button class="close-help icon-button" aria-label="Close keyboard shortcuts">×</button></div><h2 tabindex="-1" autofocus>Explore the edge.</h2><p>Drag or use one finger to orbit; in flight, look freely. Scroll or pinch to zoom. F stops the approach; R restores the view.</p><dl>${SHORTCUTS.map(shortcut => `<div data-shortcut="${shortcut.code}"><dt>${shortcut.description}</dt><dd><kbd>${shortcut.label}</kbd></dd></div>`).join('')}</dl><p class="help-note">Spin controls disk rotation and beaming. The spacetime model remains Schwarzschild.</p></dialog>
   `;
   document.body.append(hud);
   const events = new AbortController();
@@ -193,6 +194,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
     if (Number.isFinite(r.mass)) write('mass', compact(r.mass));
     if (Number.isFinite(r.radius)) write('radius', compact(r.radius / 1000));
     if (Number.isFinite(r.cameraDistance)) write('cameraDistance', r.cameraDistance.toFixed(2));
+    if (Number.isFinite(r.shadowFraction)) write('shadowFraction', (r.shadowFraction * 100).toFixed(1));
     if (Number.isFinite(r.dilation)) write('dilation', `τ / t ${r.dilation.toFixed(3)}`);
     if (Number.isFinite(r.clock)) write('clock', clock(r.clock));
     if (r.probeState !== undefined) {

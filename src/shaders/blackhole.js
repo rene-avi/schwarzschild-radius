@@ -1,3 +1,5 @@
+import { GEODESIC as G } from '../geodesic.js';
+
 // All radii are measured in Schwarzschild radii. No textures are sampled.
 export const vertexShader = /* glsl */ `
   varying vec2 vUv;
@@ -15,13 +17,15 @@ export const fragmentShader = /* glsl */ `
   uniform vec2 uScreenOffset;
   uniform float uTime;
   uniform vec3 uCameraPosition;
-  uniform vec3 uCameraTarget;
+  uniform vec3 uCameraForward;
+  uniform vec3 uCameraRight;
+  uniform vec3 uCameraUp;
+  uniform vec4 uLayers;
   uniform float uTemperature;
   uniform float uSpin;
   uniform float uTilt;
   uniform float uLensing;
   uniform float uQuality;
-  uniform float uFly;
   uniform float uDiskIntensity;
   uniform vec3 uProbePosition;
   uniform float uProbeRadius;
@@ -64,27 +68,16 @@ export const fragmentShader = /* glsl */ `
     vec2 grid = sky * vec2(density * 2.0, density);
     vec2 cell = floor(grid);
     vec2 f = fract(grid);
-    vec3 stars = vec3(0.0);
-      for (int ix = -1; ix <= 1; ix++) {
-        if (ix != 0 && uFly < 0.02) continue;
-        vec2 shift = vec2(float(ix), 0.0);
-        vec2 id = cell + shift;
-        float h = hash21(id + seed);
-        // Insets contain ordinary point sources in their own cell; only the
-        // horizontal neighbors are needed when fly-in trails become long.
-        vec2 center = 0.18 + 0.64 * vec2(hash21(id + 13.7 + seed), hash21(id + 41.3 + seed));
-        vec2 delta = f - shift - center;
-        // Radial elongation during a fly-in is applied in sky longitude.
-        delta.x /= 1.0 + uFly * 7.0;
-        float radius = max(0.024 + 0.034 * h, pixelAngle * density * 0.15);
-        float core = exp(-dot(delta, delta) / (radius * radius));
-        float rare = step(0.992, h);
-        float halo = exp(-length(delta) * 24.0) * rare;
-        float visible = step(0.80, h);
-        vec3 tint = mix(vec3(0.48, 0.64, 0.90), vec3(1.0, 0.79, 0.53), hash21(id + 88.0));
-        stars += tint * (core * (0.19 + rare * 1.6) + halo * 0.12) * visible;
-    }
-    return stars;
+    float h = hash21(cell + seed);
+    vec2 center = 0.18 + 0.64 * vec2(hash21(cell + 13.7 + seed), hash21(cell + 41.3 + seed));
+    vec2 delta = f - center;
+    float radius = max(0.024 + 0.034 * h, pixelAngle * density * 0.15);
+    float core = exp(-dot(delta, delta) / (radius * radius));
+    float rare = step(0.992, h);
+    float halo = exp(-length(delta) * 24.0) * rare;
+    float visible = step(0.80, h);
+    vec3 tint = mix(vec3(0.48, 0.64, 0.90), vec3(1.0, 0.79, 0.53), hash21(cell + 88.0));
+    return tint * (core * (0.19 + rare * 1.6) + halo * 0.12) * visible;
   }
 
   vec3 skyColor(vec3 ray, float pixelAngle) {
@@ -131,7 +124,7 @@ export const fragmentShader = /* glsl */ `
     float beta = min(0.56, sqrt(0.5 / max(r - 1.0, 0.1))) * (0.85 + abs(uSpin) * 0.15);
     float toward = dot(tangent * direction, -normalize(ray));
     float doppler = sqrt(1.0 - beta * beta) / max(0.2, 1.0 - beta * toward);
-    float gravitationalShift = sqrt(max(0.01, 1.0 - 1.0 / r));
+    float gravitationalShift = sqrt((1.0 - uLensing / r) / (1.0 - uLensing / length(uCameraPosition)));
     float shift = doppler * gravitationalShift;
     float temperature = uTemperature * pow(inner / r, 0.62) * shift;
     vec3 color = blackbody(temperature);
@@ -169,110 +162,157 @@ export const fragmentShader = /* glsl */ `
     return color * hit * (1.0 + uProbeDilation * 3.0);
   }
 
-  vec3 acceleration(vec3 position, float angularMomentumSquared) {
-    float r2 = dot(position, position);
-    return -1.5 * uLensing * angularMomentumSquared * position / max(r2 * r2 * sqrt(r2), 0.01);
+  vec3 observedSky(vec3 ray, float pixelAngle, float observerShift) {
+    float gain = min(pow(observerShift, 0.75), 2.8);
+    vec3 tint = mix(vec3(1.0), vec3(0.85, 0.96, 1.15), clamp((observerShift - 1.0) * 0.2, 0.0, 1.0));
+    vec3 sky = skyColor(ray, pixelAngle);
+    return min(sky * gain * tint, max(sky, vec3(1.8, 2.2, 2.8))) * uLayers.y;
+  }
+
+  // Vacuum remainder to infinity; the cutoff guarantees b/r <= 1/2.
+  float escapeAngle(float u, float b) {
+    float z = b * u;
+    float z2 = z * z;
+    float c = sqrt(1.0 - z2);
+    float first = z2 * z2 / (c * (1.0 + c) * (1.0 + c));
+    float second = z * z2 * z2 * z2 * (1.0 / 7.0 + z2 * (5.0 / 18.0 + z2 * (35.0 / 88.0 + z2 * (105.0 / 208.0 + z2 * 77.0 / 128.0))));
+    float epsilon = uLensing / b;
+    return asin(z) - epsilon * first / 2.0 + 3.0 * epsilon * epsilon * second / 8.0;
   }
 
   void main() {
     vec2 screen = (vUv * 2.0 - 1.0) + uScreenOffset * 2.0;
     screen.x *= uResolution.x / uResolution.y;
-    vec3 forward = normalize(uCameraTarget - uCameraPosition);
-    vec3 right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));
-    vec3 up = cross(right, forward);
-    vec3 initialRay = normalize(forward + tan(21.0 * PI / 180.0) * (screen.x * right + screen.y * up));
-    vec3 position = uCameraPosition;
-    vec3 velocity = initialRay;
-    float pixelAngle = 0.768 / uResolution.y;
-    vec3 angularMomentum = cross(position, velocity);
-    float angularMomentumSquared = dot(angularMomentum, angularMomentum);
+    vec3 initialRay = normalize(uCameraForward + tan(${G.halfFov}) * (screen.x * uCameraRight + screen.y * uCameraUp));
+    float observerRadius = length(uCameraPosition);
+    vec3 radial = uCameraPosition / observerRadius;
+    float mu = clamp(dot(initialRay, -radial), -1.0, 1.0);
+    vec3 transverse = initialRay + radial * mu;
+    float sinPsi = length(transverse);
+    vec3 tangent = sinPsi >= ${G.radialEpsilon.toFixed(6)} ? transverse / sinPsi : uCameraUp;
+    float lapse = sqrt(1.0 - uLensing / observerRadius);
+    float impact = observerRadius * sinPsi / lapse;
+    float pixelAngle = ${2 * Math.tan(G.halfFov)} / uResolution.y;
+    float surface = ${G.captureRadius} * max(1.0, uLensing);
+    float photonSphere = 1.5 * uLensing;
+    float critical = photonSphere >= surface ? ${G.criticalImpact} * uLensing
+      : surface / sqrt(1.0 - uLensing / surface);
+    float shadowSin = min(1.0, critical * lapse / observerRadius);
+    float shadowCos = sqrt(max(0.0, 1.0 - shadowSin * shadowSin));
+    if (observerRadius < photonSphere) shadowCos = -shadowCos;
+    // The conserved impact parameter fixes fate even for unresolved critical orbits.
+    bool captured = mu > shadowCos;
+    float vignette = 1.0 - smoothstep(0.35, 1.9, length(vUv * 2.0 - 1.0)) * 0.18;
+    if (sinPsi < ${G.radialEpsilon.toFixed(6)}) {
+      gl_FragColor = vec4(captured ? vec3(0.0) : observedSky(initialRay, pixelAngle, 1.0 / lapse) * vignette, 1.0);
+      return;
+    }
+
+    // Local orthonormal directions map to coordinate directions with tan(psi') = tan(psi)/lapse.
+    vec3 coordinateRay = normalize(-radial * mu + transverse / lapse);
+    float radialDot = dot(radial, coordinateRay);
+    vec3 impactDirection = normalize(radial - coordinateRay * radialDot);
+    float finiteDistance = 1.0 - radialDot;
+    float deflection = finiteDistance * uLensing / impact
+      + (15.0 * PI / 32.0) * finiteDistance * uLensing * uLensing / (impact * impact);
+    vec3 weakRay = normalize(coordinateRay * cos(deflection) - impactDirection * sin(deflection));
+    if (impact >= ${G.weakEnd.toFixed(1)}) {
+      gl_FragColor = vec4(observedSky(weakRay, pixelAngle, 1.0 / lapse) * vignette, 1.0);
+      return;
+    }
+
     float tilt = uTilt * PI / 180.0;
     vec3 normal = vec3(0.0, cos(tilt), -sin(tilt));
     vec3 light = vec3(0.0);
     float transmittance = 1.0;
-    bool captured = false;
-    int limit = uQuality < 0.5 ? 56 : (uQuality < 1.5 ? 72 : 88);
-    float impact = sqrt(angularMomentumSquared);
-    float vignette = 1.0 - smoothstep(0.35, 1.9, length(vUv * 2.0 - 1.0)) * 0.18;
-    float sphereB = dot(position, velocity);
-    float observerRadius = length(position);
-    vec3 impactDirection = (position - velocity * sphereB) / max(impact, 0.0001);
-    float finiteDistance = 1.0 - sphereB / observerRadius;
-    float deflection = finiteDistance * uLensing / max(impact, 1.0)
-      + (15.0 * PI / 32.0) * finiteDistance * uLensing * uLensing / max(impact * impact, 1.0);
-    vec3 weakRay = normalize(velocity * cos(deflection) - impactDirection * sin(deflection));
-    // Rays this far from the shadow cannot intersect the disk or released probe.
-    // Second-order weak deflection retains star lensing without a full orbit.
-    if (impact >= 12.0) {
-      gl_FragColor = vec4(skyColor(weakRay, pixelAngle) * vignette, 1.0);
-      return;
-    }
     vec3 coronaColor = blackbody(uTemperature * 0.8) * uDiskIntensity * 0.01;
+    int limit = uQuality < 0.5 ? ${G.performanceSteps} : (uQuality < 1.5 ? ${G.balancedSteps} : ${G.highSteps});
+    float maxAngle = uQuality < 0.5 ? ${G.performanceAngle} : (uQuality < 1.5 ? ${G.balancedAngle} : ${G.highAngle});
+    float criticalAngle = uQuality < 0.5 ? ${G.performanceCriticalAngle} : (uQuality < 1.5 ? ${G.balancedCriticalAngle} : ${G.highCriticalAngle});
+    float criticalDistance = min(1.0, ${G.criticalImpactScale.toFixed(1)} * abs(impact / critical - 1.0));
+    float escapeU = 1.0 / max(${G.escapeRadius.toFixed(1)}, ${G.escapeImpact.toFixed(1)} * impact);
+    float u = 1.0 / observerRadius;
+    float v = mu / impact;
+    vec3 orbitRadial = radial;
+    vec3 orbitTangent = tangent;
+    vec3 position = uCameraPosition;
+    vec3 velocity = coordinateRay;
+    vec3 outgoing = initialRay;
 
-    // Skip the empty space before the integration volume for distant cameras.
-    float sphereC = dot(position, position) - 28.0 * 28.0;
-    float sphereD = sphereB * sphereB - sphereC;
-    if (sphereC > 0.0 && sphereD > 0.0 && sphereB < 0.0) {
-      position += velocity * max(0.0, -sphereB - sqrt(sphereD));
-    }
-    // Verlet's endpoint force becomes the next step's starting force. Reusing
-    // it saves one force evaluation per ray step without changing the orbit.
-    vec3 cachedAcceleration = acceleration(position, angularMomentumSquared);
-
-    for (int i = 0; i < 88; i++) {
-      if (i >= limit) break;
-      float radius = length(position);
-      if (radius < 1.015) { captured = true; break; }
-      if (radius > 29.0 && dot(position, velocity) > 0.0) break;
-      float stepSize = clamp(radius * (uQuality < 0.5 ? 0.19 : 0.15), 0.065, 2.8);
-      // Velocity Verlet conserves the orbital plane and angular momentum well
-      // enough to retain both disk crossings around the photon sphere.
-      vec3 nextPosition = position + velocity * stepSize + cachedAcceleration * stepSize * stepSize * 0.5;
-      vec3 nextAcceleration = acceleration(nextPosition, angularMomentumSquared);
-      vec3 nextVelocity = velocity + (cachedAcceleration + nextAcceleration) * stepSize * 0.5;
+    // RK4 solves u'' + u = 1.5 L u^2; the reference uses identical stages and step rules.
+    for (int i = 0; i < ${G.highSteps}; i++) {
+      if (i >= limit || u >= 1.0 / surface) break;
+      if (v < 0.0 && u < escapeU) {
+        float tail = escapeAngle(u, impact);
+        outgoing = orbitRadial * cos(tail) + orbitTangent * sin(tail);
+        break;
+      }
+      float angularLimit = min(min(maxAngle, ${G.flatAngle} + uLensing), criticalAngle + ${G.criticalStep} * abs(1.0 - 1.5 * uLensing * u) * criticalDistance);
+      float h = min(angularLimit, max(${G.minimumAngle.toFixed(6)}, ${G.radialStep} * u / max(abs(v), u)));
+      float a1 = 1.5 * uLensing * u * u - u;
+      float u2 = u + v * h * 0.5;
+      float v2 = v + a1 * h * 0.5;
+      float a2 = 1.5 * uLensing * u2 * u2 - u2;
+      float u3 = u + v2 * h * 0.5;
+      float v3 = v + a2 * h * 0.5;
+      float a3 = 1.5 * uLensing * u3 * u3 - u3;
+      float u4 = u + v3 * h;
+      float v4 = v + a3 * h;
+      float a4 = 1.5 * uLensing * u4 * u4 - u4;
+      float nextU = u + h / 6.0 * (v + 2.0 * v2 + 2.0 * v3 + v4);
+      float nextV = v + h / 6.0 * (a1 + 2.0 * a2 + 2.0 * a3 + a4);
+      if (nextU <= 0.0) {
+        float tail = h * u / (u - nextU);
+        outgoing = orbitRadial * cos(tail) + orbitTangent * sin(tail);
+        break;
+      }
+      // Bounded-angle Taylor rotations avoid transcendental work in the orbit loop.
+      float h2 = h * h;
+      float s = h * (1.0 + h2 * (-1.0 / 6.0 + h2 * (1.0 / 120.0 - h2 / 5040.0)));
+      float c = 1.0 + h2 * (-1.0 / 2.0 + h2 * (1.0 / 24.0 - h2 / 720.0));
+      vec3 nextRadial = orbitRadial * c + orbitTangent * s;
+      vec3 nextTangent = -orbitRadial * s + orbitTangent * c;
+      vec3 nextPosition = nextRadial / nextU;
+      vec3 nextVelocity = normalize(-nextV * nextRadial + nextU * nextTangent);
       vec3 segment = nextPosition - position;
       float segmentLength = length(segment);
-
       float plane0 = dot(position, normal);
       float plane1 = dot(nextPosition, normal);
-      if (plane0 * plane1 < 0.0) {
+      if (uLayers.x > 0.5 && plane0 * plane1 < 0.0) {
         float fraction = plane0 / (plane0 - plane1);
         vec3 crossing = mix(position, nextPosition, fraction);
         vec3 emission = diskEmission(crossing, velocity, normal);
         light += emission * transmittance;
-        // An optically thin disk leaves secondary and tertiary images visible.
         transmittance *= mix(1.0, 0.48, smoothstep(0.01, 0.5, length(emission)));
       }
-      if (uProbeRadius > 0.0) light += probeEmission(position, segment / segmentLength, segmentLength) * transmittance;
-      // A faint finite-height corona softens the razor-thin disk without hiding
-      // its turbulent individual filaments.
-      if (radius < 8.5 && abs(plane0) < 0.7) {
+      if (uLayers.w > 0.5 && uProbeRadius > 0.0 && segmentLength > 0.0) light += probeEmission(position, segment / segmentLength, segmentLength) * transmittance;
+      float radius = length(position);
+      if (uLayers.x > 0.5 && radius < 8.5 && abs(plane0) < 0.7) {
         float coronaOffset = (radius - 4.1) / 2.0;
         float corona = exp(-abs(plane0) * 15.0) * exp(-coronaOffset * coronaOffset);
-        light += coronaColor * corona * stepSize * transmittance;
+        light += coronaColor * corona * segmentLength * transmittance;
       }
       position = nextPosition;
       velocity = nextVelocity;
-      cachedAcceleration = nextAcceleration;
+      orbitRadial = nextRadial;
+      orbitTangent = nextTangent;
+      outgoing = nextVelocity;
+      u = nextU;
+      v = nextV;
     }
 
-    // Long-lived near-critical rays accumulate around r = 1.5 r_s.
-    if (!captured && length(position) < 2.0) captured = true;
     if (!captured) {
-      vec3 outgoing = normalize(mix(normalize(velocity), weakRay, smoothstep(10.0, 12.0, impact)));
-      light += skyColor(outgoing, pixelAngle) * transmittance;
+      outgoing = normalize(mix(outgoing, weakRay, smoothstep(${G.weakStart.toFixed(1)}, ${G.weakEnd.toFixed(1)}, impact)));
+      light += observedSky(outgoing, pixelAngle, 1.0 / lapse) * transmittance;
     }
-
-    // Resolve the subpixel higher-order photon images analytically. The critical
-    // impact parameter is sqrt(27)/2 r_s for the Schwarzschild photon sphere.
-    float critical = uLensing > 0.6667 ? 2.598076 * uLensing : inversesqrt(max(1.0 - uLensing, 0.01));
-    float ringWidth = max(0.016, pixelAngle * length(uCameraPosition) * 0.7);
+    float ringWidth = max(0.016, pixelAngle * observerRadius / lapse * 0.7);
     float ringOffset = (impact - critical) / ringWidth;
     float photonRing = exp(-ringOffset * ringOffset);
     float ringAzimuth = atan(screen.y, screen.x);
     float ringBeaming = 0.65 + 0.40 * cos(ringAzimuth + 0.1);
-    light += blackbody(uTemperature * 1.16) * photonRing * ringBeaming * 0.95 * smoothstep(0.5, 0.9, uLensing) * uDiskIntensity;
-
+    bool ringSide = observerRadius >= photonSphere ? mu >= 0.0 : mu <= 0.0;
+    if (ringSide) light += blackbody(uTemperature * 1.16) * photonRing * ringBeaming * 0.95
+      * smoothstep(0.5, 0.9, uLensing) * uDiskIntensity * uLayers.z;
     gl_FragColor = vec4(light * vignette, 1.0);
   }
 `;

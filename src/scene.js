@@ -22,14 +22,16 @@ export class BlackHoleScene {
       uResolution: { value: new THREE.Vector2() },
       uTime: { value: 0 },
       uCameraPosition: { value: new THREE.Vector3() },
-      uCameraTarget: { value: new THREE.Vector3() },
+      uCameraForward: { value: new THREE.Vector3() },
+      uCameraRight: { value: new THREE.Vector3() },
+      uCameraUp: { value: new THREE.Vector3() },
+      uLayers: { value: new THREE.Vector4(1, 1, 1, 1) },
       uScreenOffset: { value: new THREE.Vector2() },
       uTemperature: { value: settings.temperature },
       uSpin: { value: settings.spin },
       uTilt: { value: settings.tilt },
       uLensing: { value: settings.lensing },
       uQuality: { value: qualityForScale(1).qualityIndex },
-      uFly: { value: 0 },
       uProbePosition: { value: new THREE.Vector3(0, 0, 0) },
       uProbeRadius: { value: -1 },
       uProbeDilation: { value: 1 },
@@ -76,12 +78,13 @@ export class BlackHoleScene {
     const u = this.uniforms;
     u.uTime.value = simulationTime;
     u.uCameraPosition.value.copy(camera.position);
-    u.uCameraTarget.value.copy(camera.target);
+    u.uCameraForward.value.copy(camera.forward);
+    u.uCameraRight.value.copy(camera.right);
+    u.uCameraUp.value.copy(camera.up);
     u.uTemperature.value = settings.temperature;
     u.uSpin.value = settings.spin;
     u.uTilt.value = settings.tilt;
     u.uLensing.value = settings.lensing;
-    u.uFly.value = camera.flyAmount;
     u.uDiskIntensity.value = 0.55 + settings.temperature / 12000;
     if (probe) {
       // A bounded near-side descent stays observable as coordinate time freezes.

@@ -1,6 +1,6 @@
 # Event Horizon
 
-Insired by https://www.reddit.com/r/DeepSeek/comments/1xf0vlu/deepseek_v41_flash_built_an_interstellarstyle/
+Inspired by https://www.reddit.com/r/DeepSeek/comments/1xf0vlu/deepseek_v41_flash_built_an_interstellarstyle/
 
 A real-time black hole observatory built with Three.js, GLSL, and Vite. Orbit a turbulent accretion disk, approach the horizon, or release a probe and watch its signal redshift. The stars, galaxy, disk, ship, film grain, and HUD graphics are procedural. The application loads no external images, textures, models, fonts, or services.
 
@@ -19,7 +19,7 @@ npm run build
 
 The repository's root `index.html` is a launcher: opening it locally forwards to `dist/index.html`, so keep the build directory next to it. To share the simulation, send the built `dist/index.html` alone.
 
-The standalone file is approximately 530 KB. A small source `index.html` copied alone into Downloads is only the launcher and cannot find the simulation without its neighboring `dist/` directory. The complete file shows a startup panel before running any application code. If JavaScript is disabled, graphics initialization fails, or startup throws an error, it displays an explanation instead of leaving an empty page; share the text under **Startup details** when troubleshooting.
+The standalone file is approximately 550 KB. A small source `index.html` copied alone into Downloads is only the launcher and cannot find the simulation without its neighboring `dist/` directory. The complete file shows a startup panel before running any application code. If JavaScript is disabled, graphics initialization fails, or startup throws an error, it displays an explanation instead of leaving an empty page; share the text under **Startup details** when troubleshooting.
 
 ### Development server
 
@@ -66,13 +66,13 @@ The workflow in `.github/workflows/pages.yml` runs on pushes to `main` and can a
 | D | Rotate right |
 | / | Toggle shortcuts and control reminder |
 
-Drag the scene with the left mouse button to orbit, and use the mouse wheel to zoom; both restore manual orbit. The dock, logo, clock, Cinematic, alignment and Shortcuts buttons provide the corresponding actions above.
+Drag with the left mouse button or one finger to orbit. During Fly in, dragging is persistent free look added to the automatic gaze. Scroll or pinch with two fingers to zoom over the same range; zoom stops the automatic approach. F again stops at the current position and retains the view and free look; R resets position and gaze. The dock, logo, clock, Cinematic, alignment and Shortcuts buttons provide the corresponding actions above.
 
-Shortcuts work while a range slider has focus. Arrow keys, Home, End, PageUp and PageDown retain native slider behavior; Space on a focused button activates only that button. Text inputs, textareas, selects and editable text retain their keys. Pause stops disk motion, the local clock, and the probe; the camera remains available. The camera stays outside the horizon, from 1.055 to 65 Schwarzschild radii. Cinematic mode follows a slow, repeating-height orbital path. Press H for a clean recording view and capture it with your browser or screen recorder; there is no built-in video encoder.
+Shortcuts work while a range slider has focus. Arrow keys, Home, End, PageUp and PageDown retain native slider behavior; Space on a focused button activates only that button. Text inputs, textareas, selects and editable text retain their keys. Pause stops disk motion, the local clock, and the probe; the camera remains available. The camera is a hovering static observer, with radii from `1.03 × max(1, lensing)` to 65 Schwarzschild radii. Cinematic mode follows a slow, repeating-height orbital path looking toward the hole. Press H for a clean recording view and capture it with your browser or screen recorder; there is no built-in video encoder.
 
 The help dialog lists every shortcut; the one-line reminder shows C, F, P, Space and R. While help is open, other shortcuts and camera keys are ignored. Escape closes the dialog natively without changing camera mode; `/` also closes it.
 
-The HUD reports mass, Schwarzschild radius, observer distance, local proper time, probe dilation, frame rate, and quality mode and scale. At widths of 760 px or less the panel starts closed and its toggle opens it. Above 760 px the panel is always visible. Crossing that breakpoint restores the new layout's default state.
+The HUD reports mass, Schwarzschild radius, observer distance, SHADOW (percentage of the entire local sky covered by the shadow), local proper time, probe dilation, frame rate, and quality mode and scale. At widths of 760 px or less the panel starts closed and its toggle opens it. Above 760 px the panel is always visible. Crossing that breakpoint restores the new layout's default state.
 
 ### Parameters and presets
 
@@ -82,7 +82,7 @@ The HUD reports mass, Schwarzschild radius, observer distance, local proper time
 | Spin | 0–0.99 | Artistic disk rotation, inner edge, and orbital-beaming adjustment |
 | Disk temperature | 2,000–20,000 K | Reference emission temperature |
 | Disk tilt | −70° to +70° | Disk-plane rotation relative to the scene |
-| Lensing strength | 0–2× | Multiplier on ray deflection; 1× is the reference model |
+| Lensing strength | 0–2× | Effective Schwarzschild radius in ray geometry and static frequency shifts; 1× is the physical reference |
 | Time scale | 0–4× | Disk, clock, and probe simulation speed |
 
 | Preset | Mass (M☉) | Spin | Temperature | Tilt | Lensing | Time scale |
@@ -114,18 +114,32 @@ A stationary clock outside the horizon ticks relative to a distant clock by
 dτ/dt = √(1 − rₛ/r)
 ```
 
-The on-screen clock integrates this factor at the observer's radius. Approaching the horizon visibly slows it. The utility returns zero at or inside the horizon as a display limit; a stationary observer cannot physically exist there. Moving observers and freely falling clocks require additional velocity and trajectory calculations, which this visualization does not solve.
+The on-screen clock integrates this factor at the observer's radius, using the effective radius L when the lensing control differs from 1. Approaching the horizon visibly slows it. The utility returns zero at or inside the horizon as a display limit; a stationary observer cannot physically exist there. Moving observers and freely falling clocks require additional velocity and trajectory calculations, which this visualization does not solve.
 
 ### Curved rays, disk images, and the photon ring
 
-Each fragment launches a ray from the orbiting camera and integrates its curved path with velocity Verlet steps. In units where `rₛ = 1`, the ray model uses
+Each fragment launches a direction in the hovering observer's local orthonormal frame. With `rₛ = 1`, `L = lensing`, and local angle `ψ` measured from the inward radial direction, the conserved impact parameter and equivalent coordinate angle are
 
 ```text
-L² = |x × v|²
-d²x/dλ² = −(3/2) × lensing × L² × x / |x|⁵
+b = r sin(ψ) / √(1 − L/r)
+ψ′ = atan2(sin(ψ) / √(1 − L/r), cos(ψ))
+u″ + u = (3/2) L u²,  u = 1/r
+u(0) = 1/r_observer,  u′(0) = cos(ψ)/b
 ```
 
-This central-force form approximates Schwarzschild null-ray bending in the ray's orbital plane. Finite integration steps, finite ray budgets, and the tunable lensing multiplier make it a real-time visualization rather than a precision relativistic ray tracer. Rays that reach `1.015 rₛ` are captured; escaping rays sample the procedural sky.
+The orbital equation and local-frame geometry are exact Schwarzschild null-ray geometry at `L = 1`; numerical RK4 steps approximate its solution. `src/geodesic.js` supplies the shader's constants and a pure reference with the same RK4 stages and adaptive angular step rule. Steps shrink near the photon sphere; outgoing rays beyond the disk and probe region finish with a second-order analytic vacuum remainder once `r > max(12, 2b)`. Incremental polynomial rotations advance the shader's orbital basis. The conserved **true** `b` determines capture, the added photon ring, and the weak-field shortcut. Capture is masked analytically, including unresolved near-critical orbits. The capture surface is `1.015 × max(1, L)`; the camera remains outside it and outside `r = L`. At `L = 0`, the view is flat with an opaque black ball. At small nonzero L where the photon sphere lies inside the capture surface, that surface determines the shadow boundary.
+
+For the exposed photon sphere, the shadow's angular radius satisfies
+
+```text
+sin(α) = (3√3 L / 2r) √(1 − L/r)
+α ≤ 90° outside r = 1.5 L; α = 180° − asin(...) inside
+shadow fraction = (1 − cos(α)) / 2
+```
+
+At `L = 1`, α is 6.342807° at r=23, 17.685065° at r=8, 45° at r=3, 90° at r=1.5, and 154.501741° at r=1.03. The shadow covers about 0.3%, 50%, and 95.1% of the entire sky at r=23, 1.5, and 1.03 respectively.
+
+Fly in descends for about 60 seconds to a final hover. Over its first seconds the path eases to 21° from the tilted disk plane on its starting side, clearing the emitting sheet during the approach from the default radius. Inside the disk's inner edge it sinks towards 8° from that plane. At the reference lensing strength, the gaze starts turning away from the disk side below r=6, reaches 90° at the photon sphere r=1.5, and looks straight out at r=1.03. The outside universe then occupies a disc of angular radius 25.498259°. Notices mark the disk's inner edge, the photon sphere and final hover. W/S thrust can change the approach, including leaving the hover; A/D steers around the disk normal. A rotation-based camera basis stays stable when looking straight in or out. This is a controlled hovering-camera path, not a freely falling observer or an aberration model.
 
 Disk-plane crossings accumulate optically thin emission. A bent ray can cross the disk more than once, revealing its far side above and below the central shadow. Layered noise and animated radial filaments supply turbulence. A faint procedural corona softens the thin disk.
 
@@ -141,13 +155,11 @@ For an emitter moving at `β = v/c`, the relativistic Doppler factor is
 δ = √(1 − β²) / (1 − β cos θ)
 ```
 
-Here `cos θ = +1` means motion toward the observer. The approaching disk is brighter and shifted toward blue; the receding side is dimmer and shifted toward red. The shader multiplies specific intensity by `δ³` and shifts the reference color temperature by `δ √(1 − rₛ/r)`. Bolometric intensity would use `δ⁴`; the displayed RGB colors are a smooth artistic blackbody approximation, not a spectrally integrated radiative-transfer calculation.
+Here `cos θ = +1` means motion toward the observer. The approaching disk is brighter and shifted toward blue; the receding side is dimmer and shifted toward red. The shader multiplies specific intensity by `δ³`. For a static emitter at r_e and observer at r_o the gravitational frequency ratio is `g = √[(1 − L/r_e)/(1 − L/r_o)]`; the disk's reference color temperature is multiplied by `δg`. Equal static radii give g=1; an observer at infinity recovers the emitter's redshift. The sky receives the observer's blueshift `1/√(1 − L/r_o)` through a bounded brightening and slight blue tint. These static frequency ratios and the geometry are exact at L=1; the displayed colour/intensity mapping, disk velocity prescription and blackbody fit are illustrative. Bolometric beaming would use `δ⁴`; this is not a spectrally integrated radiative-transfer calculation.
 
 ### Stars, galaxy, and alignment
 
 Hashed angular cells create point stars; fractal noise creates the galaxy band and dust. Both are evaluated at the **bent outgoing ray**, so the background visibly warps as the camera moves. A brighter directional star at `normalize(0, −5.8, −21)` provides an alignment target: orbit until the black hole lies between the observer and that direction to obtain an Einstein-ring configuration. The default camera is near this axis. Its visibility depends on alignment, disk emission, and render resolution; the star ring is produced by ray bending rather than a separately drawn circle.
-
-Fly-in mode elongates the procedural stars as a cinematic cue. This streaking is an artistic approximation, not a complete relativistic aberration or exposure model.
 
 ### The probe
 
@@ -165,7 +177,7 @@ Three.js bloom spreads bright emission. A final pass applies an ACES-style tone 
 
 The target is 60 fps on a hardware-accelerated desktop browser. Render resolution is capped independently of display DPI. **Auto** quality starts at 100% scale. Three seconds of measured rates below 50 fps trigger a 12 percentage point reduction. If throughput does not improve by at least 12% during the following measurement, a second reduction is tried where the 40% floor allows it: vsync can hide the first gain. If the available trials do not improve throughput, the pre-probe scale is restored and the observed rate is remembered as a frame cap. Further reductions target 85% of that cap; a rate more than 20% above it clears the cap. Twelve seconds at 58 fps (or 97% of a known cap) allow recovery; a failed upward trial waits 60 seconds before another attempt. Long frame gaps reset the measurement without changing quality.
 
-The **Quality** control also offers fixed **High** (100%), **Balanced** (76%) and **Performance** (52%) modes, which disable adaptation. High uses 88 integration steps, Balanced 72, and Performance 56. Auto uses those same budgets at scales of at least 90%, at least 60%, and below 60%, respectively, with a floor of 40%. Returning to Auto starts again at 100%. The status bar reads, for example, `AUTO · HIGH · 100%` or `FIXED · BALANCED · 76%`. Distant sky rays use a smoothly blended weak-deflection approximation.
+The **Quality** control also offers fixed **High** (100%), **Balanced** (76%) and **Performance** (52%) modes, which disable adaptation. High allows up to 352 RK4 steps of at most 0.22 radians, Balanced 192 at 0.28, and Performance 144 at 0.34. Steps shrink with proximity to the critical impact parameter and photon sphere, down to angular caps of 0.055, 0.075 and 0.1 radians respectively; radial changes can require still smaller steps. Rays terminate on capture or finish with the outgoing vacuum remainder. Auto uses those same budgets at scales of at least 90%, at least 60%, and below 60%, respectively, with a floor of 40%. Returning to Auto starts again at 100%. The status bar reads, for example, `AUTO · HIGH · 100%` or `FIXED · BALANCED · 76%`. Sky rays blend into the second-order weak-deflection approximation between true impact parameters b=10 and b=12; beyond b=12 they bypass integration. The numerical reference integrates these rays instead of taking that shortcut, independently checking the weak-deflection limit.
 
 Actual performance depends on GPU, resolution, driver, browser, and other workloads. The quality floor preserves a useful image but cannot guarantee 60 fps on every machine; software WebGL renderers can be substantially slower. Reducing the browser window size can help when recording on a limited GPU.
 
@@ -179,29 +191,32 @@ src/scene.js                Three.js render pipeline, uniforms, bloom, resolutio
 src/shaders/blackhole.js    Ray integration, disk, stars, galaxy, probe
 src/shaders/post.js         Tone mapping and film grain
 src/physics.js              Physical utilities, presets, probe trajectory
-src/camera.js               Orbit, zoom, fly-in, scripted cinematic path
+src/camera.js               Static-observer gaze, orbit, pinch, fly-in, cinematic path
+src/geodesic.js             Pure null-ray reference and shared shader constants
 src/ui.js                   Controls, keyboard help, live readouts
 src/style.css               HUD layout and responsive styling
 build/standalone.js         Single-file HTML build and source-entry conversion
-tests/physics.test.js       Units, limiting cases, Doppler shifts, probe behavior
+tests/physics.test.js       Units, limiting cases, probe behavior
+tests/geodesic.test.js      Local mapping, shadow boundaries, weak bending, shifts
+tests/camera.test.js        Gaze basis, hover/thrust, stop/reset, pinch and limits
+tests/steps.test.js         Reference step grids and bounded quality budgets
+tests/optics.test.js        Escape directions against fine angular integration
 tests/presets.test.js       Complete, bounded, immutable preset configurations
 tests/standalone.test.js    Actual build portability and classic-script regression
 tests/quality.test.js       Simulated caps, GPU limits, hitches, suspension, fixed modes
 tests/shortcuts.test.js     Keyboard focus policy and README shortcut consistency
 tests/run.mjs               Named in-process Node test runner
-tests/browser/run.mjs       Standalone Chromium interaction checks
+tests/browser/run.mjs       Standalone Chromium interaction and pixel checks
+tests/browser/checks/observer.mjs  Independent shadow measurements from screenshots
+tests/browser/checks/touch.mjs     Real multi-touch CDP input in a touch context
 ```
 
-`npm test` runs every `tests/*.test.js` through `node tests/run.mjs`, using Node's programmatic test API in one process. It prints `TOTAL <n> pass <p> fail <f>` and fails if any test fails or none run. Tests cover physics, presets, shortcut policy and documentation, and at least 120 simulated seconds per quality device scenario, without wall-clock performance thresholds. The build regression compiles the actual application under `tmp/` and checks that only one HTML file remains, with embedded styles and JavaScript that parses as a classic script.
+`npm test` runs every `tests/*.test.js` through `node tests/run.mjs`, using Node's programmatic test API in one process. It prints `TOTAL <n> pass <p> fail <f>` and fails if any test fails or none run. Tests cover physics, geodesics, camera behavior, presets, shortcut policy and documentation, and at least 120 simulated seconds per quality device scenario, without wall-clock performance thresholds. The build regression compiles the actual application under `tmp/` and checks that only one HTML file remains, with embedded styles and JavaScript that parses as a classic script.
 
-`npm run test:browser` builds a standalone file under `tmp/`, serves it on an ephemeral localhost port and runs all modules in `tests/browser/checks/` with the installed Playwright Chromium. No browser downloads are performed. It checks responsive controls, keyboard focus behavior, custom parameters, complete help, fixed quality modes, console errors and foreign requests. Failed checks save screenshots in `tests/browser/out/`; review screenshots at 375 px and the quality panel on a real GPU for visual acceptance.
+`npm run test:browser` builds a standalone file under `tmp/`, serves it on an ephemeral localhost port and runs all modules in `tests/browser/checks/` with the installed Playwright Chromium. No browser downloads are performed. It checks responsive controls, keyboard focus behavior, custom parameters, complete help, fixed quality modes, console errors and foreign requests, plus shadow boundaries measured along eight azimuths at r=23, 8 and 3, the straight horizon at r=1.5, and real two-finger pinch/free look. Failed checks and observer reference images are saved in `tmp/browser-out/`; review screenshots at 375 px and the quality panel on a real GPU for visual acceptance.
 
-For a manual rendering check, confirm a luminous disk and dark shadow, orbit to reveal the secondary disk image, compare the bright and dim sides, switch all presets, release a probe, and try fly-in and cinematic modes. Monitor the console for shader errors and the HUD for frame rate. `window.eventHorizon.getState()` exposes a copy of the current simulation telemetry for browser automation without allowing direct mutation, including `qualityMode` (`auto`, `high`, `balanced`, `performance`) and `frameCap` (fps or `null`).
+For a manual rendering check, confirm a luminous disk and dark shadow, orbit to reveal the secondary disk image, compare the bright and dim sides, switch all presets, release a probe, and try fly-in and cinematic modes. Monitor the console for shader errors and the HUD for frame rate. `window.eventHorizon.getState()` exposes a copy of the current simulation telemetry for browser automation without allowing direct mutation, including `qualityMode` (`auto`, `high`, `balanced`, `performance`), `frameCap` (fps or `null`), `renderedFrames`, and camera `gazeYaw`, `gazePitch` (radians), and `shadowFraction` (0–1). Only `?debug=1` enables `window.eventHorizon.debug`: `setCamera({ radius, theta, elevation, yaw, pitch })` jumps without easing (angles in radians), `setLayers({ disk, sky, ring, probe })` accepts booleans, and `setPaused(bool)` sets simulation pause. No URL code or expressions are executed. Pause leaves the camera available.
 
-### Validation in the cloud environment
+### Validation scope
 
-A clean `npm ci`, all 19 unit tests, and the production build passed. The production bundle was opened in Chromium and passed 26 browser checks: all presets and sliders, orbit/zoom, fly-in dilation, cinematic mode, pause, HUD hiding, responsive controls, automatic quality reduction, and the probe reaching its frozen state. No JavaScript/GLSL errors or external asset requests were observed. The lensed disk and aligned background star's Einstein ring were visually inspected.
-
-The initial Chromium checks used ANGLE/SwiftShader software rendering, reaching about 13 fps at the tested 640×480 viewport after adaptive scaling; larger views were slower. **60 fps on a hardware-accelerated desktop remains to be benchmarked.** These checks validate rendering and interactions, not that performance target.
-
-For the local-file compatibility fix, all **20 tests** and the standalone production build passed. Firefox ESR 140 opened and rendered all three entry paths directly over `file://`: the built page, the root launcher's redirect, and an independent copy in a directory containing spaces. Each had an advancing clock, no JavaScript/GLSL errors, and no subresource requests. Rendering used Mesa software graphics. Chromium also rendered the embedded page offline on an opaque origin; both Vite development and production HTTP serving were rechecked. Direct file navigation is blocked by this cloud Chromium's administrator policy, so that specific check used Firefox. Actual Safari/macOS is not available in this Linux environment.
+The Node checks compare the capture boundary from numerical ray tracing with the analytic static-observer shadow to within 0.5°, and integrated weak deflection at b=20 and b=50 with the second-order expansion to within 2%. HIGH escape directions are compared with a fine fixed-step reference to within 0.001 radians, including rays near the shadow at the final hover. `node tests/steps.test.js` prints mean and maximum HIGH integration counts on 180×112 grids at r=23 and r=8, asserts a default-view mean of at most 40, and checks resolved rays against all three quality budgets. Camera tests check tilted-disk clearance on either starting side and continuous elevation and gaze. Browser checks measure rendered shadow angles to within 1.5%, and the r=1.5 horizon line to within 6 pixels. These are geometry and interaction checks; visual acceptance of the default view, fly-in sequence and Einstein ring still requires rendered inspection. There are no frame-rate or wall-clock performance acceptance thresholds in the tests.

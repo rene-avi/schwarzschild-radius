@@ -7,9 +7,19 @@ const renderedFrames = page => page.evaluate(() => new Promise(resolve => {
   requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
 }));
 const inputState = async page => {
-  // FPS sampling continues even while the simulation is paused.
-  const { fps, ...current } = await state(page);
+  // Render diagnostics continue even while simulation and inputs are paused.
+  const { fps, renderedFrames, ...current } = await state(page);
   return current;
+};
+const assertInputState = (actual, expected, message) => {
+  const { camera, ...rest } = actual;
+  const { camera: expectedCamera, ...expectedRest } = expected;
+  assert.deepEqual(rest, expectedRest, message);
+  assert.deepEqual(Object.keys(camera), Object.keys(expectedCamera), message);
+  for (const [key, value] of Object.entries(expectedCamera)) {
+    if (typeof value === 'number') assert.ok(Math.abs(camera[key] - value) <= 1e-6, `${message}: camera.${key}`);
+    else assert.deepEqual(camera[key], value, message);
+  }
 };
 const panelOpen = async page => {
   await page.waitForFunction(() => !document.querySelector('.control-panel').inert
@@ -158,22 +168,22 @@ export const checks = [
         await page.keyboard.press(key);
         await renderedFrames(page);
         assert.equal(await page.locator('dialog').evaluate(el => el.open), true, key);
-        assert.deepEqual(await inputState(page), before, key);
+        assertInputState(await inputState(page), before, key);
       }
       await page.keyboard.down('KeyW');
       try {
         await renderedFrames(page);
-        assert.deepEqual(await inputState(page), before, 'W must not register a camera key while help is open');
+        assertInputState(await inputState(page), before, 'W must not register a camera key while help is open');
         await page.keyboard.press('Slash');
         await page.waitForFunction(() => !document.querySelector('dialog').open);
         await renderedFrames(page);
-        assert.deepEqual(await inputState(page), before, 'W must not remain registered after help closes');
+        assertInputState(await inputState(page), before, 'W must not remain registered after help closes');
       } finally { await page.keyboard.up('KeyW'); }
       await page.keyboard.press('Slash');
       assert.equal(await page.locator('dialog').evaluate(el => el.open), true);
       await page.keyboard.press('Escape');
       await page.waitForFunction(() => !document.querySelector('dialog').open);
-      assert.deepEqual(await inputState(page), before, 'Escape only closes help');
+      assertInputState(await inputState(page), before, 'Escape only closes help');
       await page.keyboard.press('KeyF');
       assert.equal((await state(page)).camera.mode, 'fly');
       await page.locator('.help-button').click();

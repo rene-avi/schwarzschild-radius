@@ -17,6 +17,8 @@ let ui;
 let frameId;
 let previousTime = null;
 let fps = 60;
+let flyMilestones = new Set();
+let renderedFrames = 0;
 const qualityController = new QualityController();
 let contextLost = false;
 const events = new AbortController();
@@ -35,8 +37,10 @@ function action(type) {
       ui.setNotice(camera.mode === 'cinematic' ? 'CINEMATIC PATH · Press H to hide the HUD for recording' : 'ORBIT CONTROL RESTORED');
       break;
     case 'fly':
+      camera.setDisk(settings.tilt, settings.spin);
       camera.setMode(camera.mode === 'fly' ? 'orbit' : 'fly');
-      ui.setNotice(camera.mode === 'fly' ? 'APPROACHING HORIZON · W/S thrust · A/D steer · R to return' : 'ORBIT CONTROL RESTORED');
+      if (camera.mode === 'fly') flyMilestones = new Set();
+      ui.setNotice(camera.mode === 'fly' ? 'APPROACHING HORIZON · Drag to look · W/S thrust · A/D steer' : 'APPROACH STOPPED · R to restore the observation point');
       break;
     case 'orbit': camera.setMode('orbit'); break;
     case 'align':
@@ -47,6 +51,8 @@ function action(type) {
       camera.reset();
       probe = null;
       clock = 0;
+      simulationTime = 0;
+      flyMilestones.clear();
       ui.setNotice('OBSERVATION POINT RESTORED');
       break;
     case 'pause': paused = !paused; break;
@@ -63,12 +69,18 @@ ui = createUI({
   onPreset(id) {
     if (!PRESETS[id]) return;
     Object.assign(settings, PRESETS[id]);
+    camera.setLensing(settings.lensing);
+    camera.setDisk(settings.tilt, settings.spin);
     camera.reset();
     probe = null;
     ui.setPreset(id, settings);
     ui.setNotice(`${settings.name.toUpperCase()} · Observation parameters loaded`);
   },
-  onChange(key, value) { if (key in settings && Number.isFinite(value)) settings[key] = value; },
+  onChange(key, value) {
+    if (key in settings && Number.isFinite(value)) settings[key] = value;
+    if (key === 'lensing') camera.setLensing(settings.lensing);
+    if (key === 'tilt' || key === 'spin') camera.setDisk(settings.tilt, settings.spin);
+  },
   onQuality(mode) { applyQuality(qualityController.setMode(mode)); },
   onAction: action,
 });
@@ -123,7 +135,18 @@ function animate(now) {
   const dt = Math.min(rawDt, 0.1);
   const simDt = paused ? 0 : dt * settings.timeScale;
   camera.update(dt);
-  const dilation = timeDilation(camera.radius);
+  const dilation = timeDilation(camera.radius, settings.lensing);
+  if (camera.mode === 'fly') {
+    for (const [id, reached, message] of [
+      ['disk', camera.radius < 2.95 - 0.35 * settings.spin, 'INSIDE THE DISK’S INNER EDGE · The shadow rises around you'],
+      ['sphere', camera.radius <= 1.5 * settings.lensing, 'PHOTON SPHERE · Half the sky is shadow · Looking along the horizon'],
+      ['hover', camera.hovering && camera.radius === camera.minimum, camera.minimum < 1.5 * settings.lensing
+        ? 'FINAL HOVER · The outside universe closes to a bright disc overhead'
+        : 'FINAL HOVER · Looking outward from the minimum observer radius'],
+    ]) {
+      if (reached && !flyMilestones.has(id)) { flyMilestones.add(id); ui.setNotice(message); }
+    }
+  }
   simulationTime += simDt;
   clock += simDt * dilation;
   if (probe) updateProbe(probe, paused ? 0 : dt, settings.timeScale);
@@ -133,6 +156,7 @@ function animate(now) {
   applyQuality(qualityDecision);
   try {
     scene.render(camera, settings, simulationTime, probe);
+    renderedFrames++;
   } catch (error) {
     console.error(error);
     contextLost = true;
@@ -144,15 +168,31 @@ function animate(now) {
     fps, quality: scene.quality, qualityMode: qualityController.qualityMode, mass: settings.mass,
     radius: schwarzschildRadius(settings.mass), dilation, clock,
     probeDilation: probe?.dilation ?? 1, probeState: probe?.state ?? 'idle',
-    cameraDistance: camera.radius, paused,
+    cameraDistance: camera.radius, shadowFraction: camera.shadowFraction, paused,
     cinematic: camera.mode === 'cinematic', fly: camera.mode === 'fly',
   });
 }
 
-// Read-only observatory telemetry, useful for automated browser validation.
+const debug = new URLSearchParams(window.location.search).get('debug') === '1' ? Object.freeze({
+  setCamera: values => camera.setCamera(values),
+  setLayers(values) {
+    const layers = scene.uniforms.uLayers.value;
+    for (const [key, component] of [['disk', 'x'], ['sky', 'y'], ['ring', 'z'], ['probe', 'w']]) {
+      if (typeof values[key] === 'boolean') layers[component] = Number(values[key]);
+    }
+  },
+  setPaused(value) { if (typeof value === 'boolean') paused = value; },
+}) : null;
+
+// Debug mutation exists only behind the explicit flag; normal telemetry is copied.
 Object.defineProperty(window, 'eventHorizon', {
   configurable: true,
-  value: Object.freeze({ getState: () => ({ settings: { ...settings }, camera: { mode: camera.mode, radius: camera.radius, dilation: timeDilation(camera.radius) }, probe: probe ? { ...probe } : null, paused, clock, fps, quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),
+  value: Object.freeze({ ...(debug ? { debug } : {}), getState: () => ({ settings: { ...settings }, camera: {
+    mode: camera.mode, radius: camera.radius, theta: camera.theta, elevation: camera.elevation,
+    dilation: timeDilation(camera.radius, settings.lensing), gazeYaw: camera.gazeYaw, gazePitch: camera.gazePitch,
+    shadowFraction: camera.shadowFraction,
+  }, probe: probe ? { ...probe } : null, paused, clock, fps, renderedFrames,
+  quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),
 });
 
 if (scene) frameId = requestAnimationFrame(animate);

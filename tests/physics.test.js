@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  G, C, SOLAR_MASS, schwarzschildRadius, timeDilation, dopplerFactor,
+  G, C, SOLAR_MASS, schwarzschildRadius, timeDilation,
   createProbe, updateProbe,
 } from '../src/physics.js';
 
@@ -50,27 +50,6 @@ test('invalid dilation inputs are rejected', () => {
   assert.throws(() => timeDilation(NaN), RangeError);
   assert.throws(() => timeDilation(2, -1), RangeError);
   assert.throws(() => timeDilation(2, Infinity), RangeError);
-});
-
-test('a stationary emitter has no Doppler shift in every direction', () => {
-  for (const direction of [-1, 0, 1]) assert.equal(dopplerFactor(0, direction), 1);
-});
-
-test('approaching light blueshifts, receding light redshifts, and transverse light dilates', () => {
-  near(dopplerFactor(0.6, 1), 2);
-  near(dopplerFactor(0.6, -1), 0.5);
-  near(dopplerFactor(0.6, 0), 0.8);
-  near(dopplerFactor(0.6, 1) * dopplerFactor(0.6, -1), 1);
-  near(dopplerFactor(-0.6, -1), 2);
-});
-
-test('unphysical Doppler inputs are rejected', () => {
-  for (const beta of [1, -1, 2, NaN, Infinity]) {
-    assert.throws(() => dopplerFactor(beta, 1), RangeError);
-  }
-  for (const direction of [-1.1, 1.1, NaN]) {
-    assert.throws(() => dopplerFactor(0.5, direction), RangeError);
-  }
 });
 
 test('a released probe falls, slows its clock, and never crosses the visible horizon', () => {

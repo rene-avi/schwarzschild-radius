@@ -7,7 +7,7 @@ import { build } from 'vite';
 import { chromium } from 'playwright';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const outDir = join(root, 'tests/browser/out');
+const outDir = join(root, 'tmp/browser-out');
 let output;
 let server;
 let browser;
@@ -22,8 +22,9 @@ try {
   assert.deepEqual(await readdir(output), ['index.html']);
   const html = await readFile(join(output, 'index.html'));
   server = createServer((request, response) => {
-    if (request.url === '/favicon.ico') { response.writeHead(204); response.end(); return; }
-    if (request.url !== '/' && request.url !== '/index.html') { response.writeHead(404); response.end(); return; }
+    const path = new URL(request.url, 'http://localhost').pathname;
+    if (path === '/favicon.ico') { response.writeHead(204); response.end(); return; }
+    if (path !== '/' && path !== '/index.html') { response.writeHead(404); response.end(); return; }
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     response.end(html);
   });
@@ -38,7 +39,8 @@ try {
   for (const name of modules) {
     const { checks } = await import(new URL(`./checks/${name}`, import.meta.url));
     for (const check of checks) {
-      const page = await browser.newPage({ viewport: check.viewport || { width: 1440, height: 900 } });
+      const context = await browser.newContext({ viewport: check.viewport || { width: 1440, height: 900 }, ...check.contextOptions });
+      const page = await context.newPage();
       page.setDefaultTimeout(15000);
       const audit = { consoleErrors: [], foreignRequests: [] };
       await page.route('**/*', route => new URL(route.request().url()).origin === url
@@ -50,7 +52,7 @@ try {
         if (address.origin !== url) audit.foreignRequests.push(request.url());
       });
       try {
-        await page.goto(url, { waitUntil: 'load' });
+        await page.goto(url + (check.path || ''), { waitUntil: 'load' });
         await page.waitForFunction(() => window.eventHorizon?.getState().clock > 0);
         await check.run({ page, url, outDir, audit });
         assert.deepEqual(audit.consoleErrors, [], 'console or page errors');
@@ -64,6 +66,7 @@ try {
         console.error(`FAIL ${check.name}: ${error.stack || error}\nScreenshot: ${screenshot}`);
       } finally {
         await page.close();
+        await context.close();
       }
     }
   }

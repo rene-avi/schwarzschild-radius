@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { writeFile } from 'node:fs/promises';
-import { circularOrbit, iscoOffset } from '../../../src/kerr.js';
+import { circularOrbit, iscoOffset, horizonOffset } from '../../../src/kerr.js';
 import { formatDuration, formatFactor } from '../../../src/ledger.js';
+import { PRESETS } from '../../../src/physics.js';
+import { worlds } from '../../../src/worlds.js';
 
 const DELTA = 1.3e-14;
 const brinkFactor = circularOrbit({ offset: iscoOffset(DELTA) }, DELTA).dtdtau;
@@ -204,6 +206,90 @@ async function assertDesktopNotices(page, viewport) {
   }
   await page.keyboard.press('KeyM');
   await panelState(page, true);
+}
+
+async function revealControls(page) {
+  if (await page.locator('.control-panel').evaluate(panel => panel.inert)) {
+    await page.locator('.panel-toggle').click();
+  }
+  await page.waitForFunction(() => !document.querySelector('.control-panel').inert
+    && getComputedStyle(document.querySelector('.control-panel')).opacity === '1');
+}
+
+async function waitForMap(page, delta, width) {
+  const labels = worlds(delta).map(body => `${body.name} ${formatFactor(body.dtdtau)}${body.id === 'brink' ? ' · ISCO' : ''}`);
+  await page.waitForFunction(({ h, width, labels }) => {
+    const svg = document.querySelector('.orbit-map');
+    return svg?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+      && document.querySelector('[data-mission-view="map"]').getAttribute('aria-pressed') === 'true'
+      && svg.getAttribute('viewBox') === `0 0 ${width} 224`
+      && Math.abs(Number(svg.querySelector('[data-map-ring="brink"]').getAttribute('data-h')) - h) <= 1e-12 * Math.max(1, Math.abs(h))
+      && labels.every(text => [...svg.querySelectorAll('text')].some(label => label.textContent === text));
+  }, { h: iscoOffset(delta) - horizonOffset(delta), width, labels });
+}
+
+async function selectMapPreset(page, preset, width) {
+  await revealControls(page);
+  await page.locator(`[data-preset="${preset}"]`).click();
+  await page.waitForFunction(delta => window.eventHorizon.getState().settings.spinDelta === delta, PRESETS[preset].spinDelta);
+  if (!(await state(page)).mission.open) await page.keyboard.press('KeyM');
+  await panelState(page, true);
+  await page.locator('[data-mission-view="map"]').click();
+  await waitForMap(page, PRESETS[preset].spinDelta, width);
+}
+
+async function assertMapLayout(page, viewport) {
+  const layout = await page.locator('.mission-panel').evaluate(panel => {
+    const svg = panel.querySelector('.orbit-map');
+    const bounds = svg.getBoundingClientRect();
+    const panelBounds = panel.getBoundingClientRect();
+    const leaders = [...svg.querySelectorAll('.map-leader')];
+    const halos = [...svg.querySelectorAll('.map-label-halo')];
+    const isco = svg.querySelector('[data-map-ring="isco"]');
+    const brink = svg.querySelector('[data-map-ring="brink"]');
+    const labels = [...svg.querySelectorAll('text')].map(text => {
+      const box = text.getBoundingClientRect();
+      return { text: text.textContent, left: box.left, right: box.right, top: box.top, bottom: box.bottom, height: box.height };
+    });
+    return {
+      width: bounds.width, height: bounds.height, viewBox: svg.getAttribute('viewBox'), labels,
+      leadersBehindLabels: leaders.length === 6 && halos.length === 6
+        && leaders.every(leader => halos.every(halo => Boolean(leader.compareDocumentPosition(halo) & Node.DOCUMENT_POSITION_FOLLOWING))),
+      iscoAboveBrink: Boolean(brink.compareDocumentPosition(isco) & Node.DOCUMENT_POSITION_FOLLOWING),
+      iscoDashed: getComputedStyle(isco).strokeDasharray !== 'none',
+      svgInside: bounds.left >= panelBounds.left + panel.clientLeft && bounds.right <= panelBounds.right - panel.clientLeft,
+      scrollHeight: panel.scrollHeight, clientHeight: panel.clientHeight,
+      scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth,
+      labelEdges: labels.every(box => box.left >= bounds.left && box.right <= bounds.right && box.top >= bounds.top && box.bottom <= bounds.bottom),
+      collisions: labels.flatMap((a, index) => labels.slice(index + 1).filter(b =>
+        a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top).map(b => [a.text, b.text])),
+      tabsHeight: panel.querySelector('.mission-views').getBoundingClientRect().height,
+      presetPadding: [...document.querySelectorAll('[data-preset]')].map(button => getComputedStyle(button).paddingTop),
+    };
+  });
+  const width = viewport.width > 760 ? 210 : 188;
+  assert.equal(layout.width, width, JSON.stringify(layout));
+  assert.equal(layout.height, 224, JSON.stringify(layout));
+  assert.equal(layout.viewBox, `0 0 ${width} 224`);
+  assert.equal(layout.labels.length, 6);
+  assert.equal(layout.leadersBehindLabels, true, JSON.stringify(layout));
+  assert.equal(layout.iscoAboveBrink, true, JSON.stringify(layout));
+  assert.equal(layout.iscoDashed, true, JSON.stringify(layout));
+  assert.equal(layout.svgInside, true, JSON.stringify(layout));
+  assert.equal(layout.labelEdges, true, JSON.stringify(layout));
+  assert.deepEqual(layout.collisions, [], JSON.stringify(layout));
+  assert.ok(layout.labels.every(box => box.height >= (viewport.width > 760 ? 9 : 8.5)), JSON.stringify(layout.labels));
+  assert.ok(layout.scrollHeight <= layout.clientHeight, JSON.stringify(layout));
+  assert.ok(layout.scrollWidth <= layout.clientWidth, JSON.stringify(layout));
+  assert.ok(layout.tabsHeight <= 24, JSON.stringify(layout));
+  assert.ok(layout.presetPadding.every(padding => padding === (viewport.width > 760 ? '6px' : '9px')), JSON.stringify(layout));
+  return layout;
+}
+
+async function waitForMapLocation(page, location) {
+  await page.waitForFunction(location => window.eventHorizon.getState().ledger.location === location
+    && [...document.querySelectorAll('[data-map-body]')].every(body => body.getAttribute('aria-pressed') === String(body.dataset.mapBody === location))
+    && [...document.querySelectorAll('[data-location]')].every(card => card.getAttribute('aria-pressed') === String(card.dataset.location === location)), location);
 }
 
 export const checks = [
@@ -419,6 +505,98 @@ export const checks = [
           await page.setViewportSize({ width, height: 812 });
           await panelState(page, false);
           await page.waitForFunction(closed => document.querySelector('.control-panel').inert === closed, width <= 760);
+        }
+      }
+    },
+  })),
+  ...[{ width: 1440, height: 900 }, { width: 1000, height: 800 }, { width: 375, height: 812 }].map(viewport => ({
+    name: `Mission orbit map geometry travel and spin at ${viewport.width}px`,
+    path: '/?debug=1', viewport,
+    async run({ page, outDir }) {
+      const width = viewport.width > 760 ? 210 : 188;
+      assert.equal(await page.locator('[data-mission-view="clocks"]').getAttribute('aria-pressed'), 'true');
+      await selectMapPreset(page, 'deep', width);
+      assert.deepEqual((await state(page)).mission, { open: true, running: false });
+      assert.deepEqual(await page.locator('[data-map-ring]').evaluateAll(rings => rings.map(ring => ring.dataset.mapRing)),
+        ['horizon', 'photon', 'ship', 'farShore', 'lantern', 'brink', 'isco']);
+      assert.equal(await page.locator('[data-map-label="horizon"]').textContent(), 'horizon');
+      assert.equal(await page.locator('[data-map-label="photon"]').textContent(), 'photon orbit');
+      assert.equal(await page.locator('.map-caption').textContent(), 'Log scale of height above the horizon; scale follows the spin');
+      assert.equal(await page.locator('.map-caption').evaluate(text => Number.parseFloat(getComputedStyle(text).fontSize)), 9);
+      const bodies = await page.locator('[data-map-body]').evaluateAll(bodies => bodies.map(body => ({
+        id: body.dataset.mapBody, role: body.getAttribute('role'), tabindex: body.getAttribute('tabindex'),
+      })));
+      assert.deepEqual(bodies.map(body => body.id), ['ship', 'farShore', 'lantern', 'brink']);
+      assert.ok(bodies.every(body => body.role === 'button' && body.tabindex === '0'), JSON.stringify(bodies));
+      const retained = await page.locator('.orbit-map').elementHandle();
+      await twoFrames(page);
+      assert.equal(await retained.evaluate(svg => svg === document.querySelector('.orbit-map')), true);
+      await page.keyboard.press('KeyM');
+      await panelState(page, false);
+      await page.keyboard.press('KeyM');
+      await panelState(page, true);
+      await waitForMap(page, DELTA, width);
+      assert.equal(await retained.evaluate(svg => svg === document.querySelector('.orbit-map')), true);
+
+      await page.locator('[data-map-body="brink"] text').click();
+      await waitForMapLocation(page, 'brink');
+      await page.locator('[data-mission-view="clocks"]').click();
+      await page.waitForFunction(() => !document.querySelector('[data-mission-content="clocks"]').hidden);
+      assert.equal(await page.locator('[data-location="brink"]').getAttribute('aria-pressed'), 'true');
+      await page.locator('[data-location="ship"]').click();
+      await waitForMapLocation(page, 'ship');
+      await page.locator('[data-mission-view="map"]').click();
+      await waitForMap(page, DELTA, width);
+      const paused = (await state(page)).paused;
+      await page.locator('[data-map-body="farShore"]').focus();
+      await page.keyboard.press('Space');
+      await waitForMapLocation(page, 'farShore');
+      assert.equal((await state(page)).paused, paused);
+      await page.locator('[data-map-body="brink"]').focus();
+      await page.keyboard.press('Enter');
+      await waitForMapLocation(page, 'brink');
+      assert.equal(await page.locator('[data-map-body="brink"]').evaluate(body => body === document.activeElement), true);
+      await page.locator('[data-mission-view="map"]').focus();
+      await page.keyboard.press('Tab');
+      assert.equal(await page.locator('[data-map-body="ship"]').evaluate(body => body === document.activeElement), true);
+
+      for (const preset of ['deep', 'gargantua']) {
+        if (preset !== 'deep') await selectMapPreset(page, preset, width);
+        const layout = await assertMapLayout(page, viewport);
+        await writeFile(join(outDir, `mission-map-${preset}-${viewport.width}.json`), `${JSON.stringify({ viewport, layout }, null, 2)}\n`);
+        await page.locator('#universe').focus();
+        await twoFrames(page);
+        await page.screenshot({ path: join(outDir, `mission-map-${preset}-${viewport.width}.png`), scale: 'css' });
+        await page.locator('.mission-panel').screenshot({ path: join(outDir, `mission-map-${preset}-${viewport.width}-panel.png`), scale: 'css' });
+      }
+      if (viewport.width === 375) {
+        const sheet = ['deep', 'gargantua'].flatMap(preset => [1440, 1000, 375].map(width =>
+          `<figure><figcaption>${PRESETS[preset].name} · ${width} px</figcaption><img src="mission-map-${preset}-${width}-panel.png" alt="${PRESETS[preset].name} Map at ${width} px"></figure>`)).join('');
+        await writeFile(join(outDir, 'mission-map-sheet.html'), `<!doctype html><html lang="en"><meta charset="utf-8"><title>Mission Map references</title><style>body{margin:24px;background:#05070b;color:#e8e6df;font:12px monospace}main{display:grid;grid-template-columns:repeat(3,270px);gap:20px}figure{margin:0}figcaption{margin-bottom:12px}img{display:block}</style><h1>Mission Map references</h1><main>${sheet}</main></html>\n`);
+      }
+
+      await revealControls(page);
+      await page.locator('#param-spinDelta').focus();
+      await page.keyboard.press('Home');
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.spinDelta === 1);
+      if (!(await state(page)).mission.open) await page.keyboard.press('KeyM');
+      await panelState(page, true);
+      await waitForMap(page, 1, width);
+      const rings = await page.locator('[data-map-ring]').evaluateAll(rings => Object.fromEntries(rings.map(ring =>
+        [ring.dataset.mapRing, { h: Number(ring.dataset.h), rho: Number(ring.getAttribute('r')) }])));
+      assert.equal(rings.horizon.h, 0);
+      assert.equal(rings.brink.rho, rings.isco.rho);
+      assert.ok(Math.abs(rings.brink.h - 4) <= 1e-12, JSON.stringify(rings));
+      assert.ok(Math.abs(rings.isco.h - 4) <= 1e-12, JSON.stringify(rings));
+      assert.ok(Math.abs(rings.photon.h - 1) <= 1e-12, JSON.stringify(rings));
+      await assertMapLayout(page, viewport);
+
+      if (viewport.width === 1440) {
+        for (const resized of [{ width: 375, height: 812 }, viewport]) {
+          await page.setViewportSize(resized);
+          await panelState(page, true);
+          await waitForMap(page, 1, resized.width > 760 ? 210 : 188);
+          await assertMapLayout(page, resized);
         }
       }
     },

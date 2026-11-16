@@ -66,11 +66,33 @@ h1 { font-size: 31px; line-height: 1.15; font-weight: 400; letter-spacing: -.9px
 
 .control-panel, .mission-panel { position: absolute; top: var(--panel-top); padding: 20px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #63635c #17191c; border: 1px solid var(--line); border-radius: 9px; background: linear-gradient(145deg, #111217b3, #0c0d12a8); box-shadow: 0 12px 50px #0002; backdrop-filter: blur(18px); pointer-events: auto; transition: opacity .2s, transform .2s; }
 .control-panel { right: var(--controls-right); width: var(--controls-width); max-height: calc(100dvh - 210px); }
-.mission-panel { right: calc(var(--controls-right) + var(--controls-width) + 16px); width: 250px; max-height: calc(100dvh - var(--panel-top) - 160px); font: 9px/14px var(--mono); opacity: 0; transform: translateX(10px); pointer-events: none; }
+.mission-panel { right: calc(var(--controls-right) + var(--controls-width) + 16px); width: 250px; padding-inline: 19px; max-height: calc(100dvh - var(--panel-top) - 160px); font: 9px/14px var(--mono); opacity: 0; transform: translateX(10px); pointer-events: none; }
 .mission-panel[inert] * { pointer-events: none !important; }
 .mission-open .mission-panel { opacity: 1; transform: none; pointer-events: auto; }
 .mission-locations { display: grid; gap: 7px; }
 .mission-panel > .panel-heading > span { line-height: 14px; }
+.mission-views { display: flex; gap: 6px; height: 24px; padding-bottom: 4px; }
+.mission-views button { padding: 2px 8px; border-radius: 3px; font: 9px/12px var(--mono); color: #aaa9a5; }
+.mission-views button[aria-pressed="true"] { background: #a4825f22; color: #ebc49e; box-shadow: inset 0 0 0 1px #e9ad7566; }
+.mission-views button:hover { color: #ebc49e; }
+[data-mission-content][hidden] { display: none; }
+.orbit-map { width: 210px; height: 224px; overflow: hidden; }
+.orbit-map [data-map-ring] { fill: none; stroke: #a7a8b33b; stroke-width: 1; }
+.orbit-map [data-map-ring="horizon"] { fill: #05070b; stroke: #d2bc9b77; }
+.orbit-map [data-map-ring="photon"], .orbit-map [data-map-ring="isco"] { stroke: #cdb49388; stroke-dasharray: 3 3; }
+.orbit-map .map-current-ring { stroke: #e9ad7599; }
+.map-leader { fill: none; stroke: #a7a8b34d; stroke-width: .75; pointer-events: none; }
+.map-dot { fill: #c0bbae; stroke: #101117; stroke-width: 1.5; }
+.map-hit { fill: transparent; }
+.map-label-halo { fill: #101117; stroke: transparent; }
+.orbit-map text { font: 9px/11px var(--mono); letter-spacing: 0; fill: #cbc9c1; stroke: #101117; stroke-width: 2px; paint-order: stroke fill; }
+[data-map-body] { cursor: pointer; outline: none; }
+[data-map-body][aria-pressed="true"] .map-label-halo { fill: #352e29; stroke: #e9ad7566; }
+[data-map-body][aria-pressed="true"] text { fill: #ebc49e; stroke: #352e29; }
+[data-map-body][aria-pressed="true"] .map-dot { fill: #ebc49e; stroke: #e9ad7566; }
+[data-map-body]:hover .map-label-halo, [data-map-body]:focus-visible .map-label-halo { stroke: #e9ad75; }
+[data-map-body]:focus-visible .map-dot { stroke: #e9ad75; stroke-width: 3; }
+.map-caption { margin: 8px 0 0; color: #aaa9a5; font: 9px/14px var(--mono); }
 .mission-locations button { display: grid; gap: 4px; width: 100%; text-align: left; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; background: #0002; font: 9px/14px var(--mono); color: #aaa9a5; }
 .mission-locations button[aria-pressed="true"] { border-color: #e9ad7566; background: #a4825f22; color: #ebc49e; }
 .mission-locations button:hover { border-color: #e9ad7566; }
@@ -259,6 +281,8 @@ input[type="range"]:hover::-webkit-slider-thumb { box-shadow: 0 0 0 5px #e9ad752
   .panel-toggle { display: inline-flex !important; top: 98px; right: 22px; background: #13151dcc; border: 1px solid var(--line); border-radius: 5px; width: 32px; height: 32px; }
   .panel-toggle svg { width: 16px; height: 16px; }
   .control-panel, .mission-panel { right: var(--controls-right); width: var(--controls-width); padding: 16px; max-height: calc(100dvh - 310px); background: #101117e8; }
+  .mission-panel { padding-inline: 15px; }
+  .orbit-map { width: 188px; }
   .mission-panel > .panel-heading { position: sticky; top: 0; z-index: 1; background: #101117; }
   .mission-locations button { padding: 12px 4px; }
   .location-factor [data-factor] { font-size: 10px; }
@@ -266,6 +290,7 @@ input[type="range"]:hover::-webkit-slider-thumb { box-shadow: 0 0 0 5px #e9ad752
   .parameter + .parameter { margin-top: 17px; }
   .panel-heading { padding-bottom: 13px; }
   .preset-tabs { margin-bottom: 18px; }
+  .world-presets button, .world-presets button:first-child, .world-presets button:nth-child(2) { padding-block: 9px; }
   .panel-footnote { margin-top: 19px; }
   .telemetry { left: 23px; bottom: 186px; width: 153px; }
   .telemetry-heading { font-size: 8.5px; letter-spacing: 1px; padding-bottom: 10px; }

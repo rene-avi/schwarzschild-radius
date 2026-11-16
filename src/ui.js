@@ -2,6 +2,7 @@ import { SHORTCUTS } from './shortcuts.js';
 import { spinFromDelta } from './kerr.js';
 import { worlds } from './worlds.js';
 import { formatDuration, formatFactor } from './ledger.js';
+import { mapModel } from './orbitmap.js';
 
 const icons = {
   orbit: '<ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(-35 12 12)"/><circle cx="12" cy="12" r="3"/>',
@@ -93,10 +94,14 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
 
     <aside class="mission-panel" aria-label="Mission" inert>
       <div class="panel-heading"><span class="eyebrow">MISSION</span><span class="panel-number">02 / CLOCKS</span></div>
+      <div class="mission-views" role="group" aria-label="Mission view"><button data-mission-view="clocks" aria-pressed="true">Clocks</button><button data-mission-view="map" aria-pressed="false">Map</button></div>
+      <div data-mission-content="clocks">
       <div class="mission-locations" role="group" aria-label="Crew location">${locations.map(body => `<button data-location="${body.id}" aria-pressed="${body.id === 'ship'}"><span class="location-heading"><span class="location-name">${body.name}</span><span data-radius>—</span></span><span class="location-factor"><span data-factor title="Home time / local time">—</span><span data-hour-cost>—</span></span></button>`).join('')}</div>
       <div class="eyebrow ledger-heading">TIME LEDGER</div>
       <dl class="mission-ledger">${ledgerRows.map(([id, label]) => `<div><dt>${label}</dt><dd data-ledger="${id}">0 s</dd></div>`).join('')}</dl>
       <div class="mission-actions"><button data-action="mission-start" aria-pressed="false">Start</button><button data-action="mission-reset">Reset ledger</button></div>
+      </div>
+      <div data-mission-content="map" hidden><div class="mission-map"></div><p class="map-caption">Log scale of height above the horizon; scale follows the spin</p></div>
     </aside>
 
     <section class="telemetry" aria-label="Live measurements">
@@ -148,6 +153,11 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   const missionPanel = hud.querySelector('.mission-panel');
   const missionToggle = hud.querySelector('[data-action="mission"]');
   const missionStart = hud.querySelector('[data-action="mission-start"]');
+  const mapHost = hud.querySelector('.mission-map');
+  const missionViews = [...hud.querySelectorAll('[data-mission-view]')];
+  let mapDelta;
+  let mapLocation;
+  let mapWidth;
   const locationReadouts = Object.fromEntries([...hud.querySelectorAll('[data-location]')].map(button => [button.dataset.location, {
     button, radius: button.querySelector('[data-radius]'), factor: button.querySelector('[data-factor]'), cost: button.querySelector('[data-hour-cost]'),
   }]));
@@ -164,9 +174,42 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
     toggle.setAttribute('aria-expanded', String(!closed));
     if (!closed && narrowLayout.matches) setMissionOpen(false);
   }
-  const syncLayout = () => setPanelClosed(narrowLayout.matches);
+  const syncLayout = () => {
+    setPanelClosed(narrowLayout.matches);
+    renderMap(mapDelta, mapLocation);
+  };
   narrowLayout.addEventListener('change', syncLayout, options);
   syncLayout();
+
+  function renderMap(delta, location) {
+    if (!Number.isFinite(delta)) return;
+    const width = narrowLayout.matches ? 188 : 210;
+    if (delta === mapDelta && location === mapLocation && width === mapWidth) return;
+    mapDelta = delta;
+    mapLocation = location;
+    mapWidth = width;
+    const model = mapModel(delta, width);
+    const focusedBody = mapHost.contains(document.activeElement) ? document.activeElement.dataset.mapBody : null;
+    // Paint the dashed ISCO over the coincident Brink orbit.
+    const ringOrder = [...model.rings.filter(ring => ring.id !== 'isco'), model.rings.find(ring => ring.id === 'isco')];
+    const rings = ringOrder.map(ring => `<circle data-map-ring="${ring.id}" data-h="${ring.h}" cx="${model.center.x}" cy="${model.center.y}" r="${ring.rho}"${ring.id === location ? ' class="map-current-ring"' : ''}/>`).join('');
+    const leaders = model.labels.map(({ point, anchor, box, side }) => {
+      const endX = side === 'start' ? box.x + box.width : box.x;
+      return `<path class="map-leader" d="M ${point.x} ${point.y} L ${endX} ${anchor.y}"/>`;
+    }).join('');
+    const labels = model.labels.map(item => {
+      const { point, anchor, box } = item;
+      const body = model.bodies.includes(item);
+      const pressed = item.id === location;
+      return `<g${body ? ` data-map-body="${item.id}" role="button" tabindex="0" aria-pressed="${pressed}" aria-label="Travel to ${item.id === 'farShore' ? 'Far Shore' : item.id[0].toUpperCase() + item.id.slice(1)}"` : ''}>
+        ${body ? `<circle class="map-hit" cx="${point.x}" cy="${point.y}" r="10"/><circle class="map-dot" cx="${point.x}" cy="${point.y}" r="3"/>` : ''}
+        <rect class="map-label-halo" x="${box.x - 3}" y="${box.y - 2}" width="${box.width + 6}" height="${box.height + 4}" rx="2"/>
+        <text data-map-label="${item.id}" x="${anchor.x}" y="${anchor.y}" text-anchor="${item.side}" dominant-baseline="central">${item.label}</text>
+      </g>`;
+    }).join('');
+    mapHost.innerHTML = `<svg class="orbit-map" xmlns="http://www.w3.org/2000/svg" width="${model.width}" height="${model.height}" viewBox="0 0 ${model.width} ${model.height}" role="group" aria-label="Schematic Kerr orbit map">${rings}${leaders}${labels}</svg>`;
+    if (focusedBody) mapHost.querySelector(`[data-map-body="${focusedBody}"]`)?.focus({ preventScroll: true });
+  }
 
   function write(name, value) {
     if (readouts[name] && readouts[name].textContent !== value) readouts[name].textContent = value;
@@ -226,7 +269,24 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   hud.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => {
     onAction(button.dataset.action);
   }, options));
-  Object.entries(locationReadouts).forEach(([id, { button }]) => button.addEventListener('click', () => onTravel(id), options));
+  const travelTo = id => onTravel(id);
+  Object.entries(locationReadouts).forEach(([id, { button }]) => button.addEventListener('click', () => travelTo(id), options));
+  missionViews.forEach(button => button.addEventListener('click', () => {
+    missionViews.forEach(tab => tab.setAttribute('aria-pressed', String(tab === button)));
+    hud.querySelectorAll('[data-mission-content]').forEach(view => { view.hidden = view.dataset.missionContent !== button.dataset.missionView; });
+    missionPanel.scrollTop = 0;
+  }, options));
+  mapHost.addEventListener('click', event => {
+    const body = event.target.closest('[data-map-body]');
+    if (body) travelTo(body.dataset.mapBody);
+  }, options);
+  mapHost.addEventListener('keydown', event => {
+    const body = event.target.closest('[data-map-body]');
+    if (body && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      if (!event.repeat) travelTo(body.dataset.mapBody);
+    }
+  }, options);
   hud.querySelectorAll('[data-quality]').forEach(button => button.addEventListener('click', () => {
     hud.querySelectorAll('[data-quality]').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
     onQuality(button.dataset.quality);
@@ -250,6 +310,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
 
   function update(r = {}) {
     if (r.ledger) {
+      renderMap(r.spinDelta, r.ledger.location);
       const setText = (element, value) => { if (element.textContent !== value) element.textContent = value; };
       for (const body of worlds(r.spinDelta)) {
         const readout = locationReadouts[body.id];

@@ -198,6 +198,7 @@ export const fragmentShader = /* glsl */ `
   float projectedFootprint(vec2 gradient, vec2 radial, vec2 rayPlane, float incidence, float pixel) {
     vec2 worldGradient = gradient.x * radial + gradient.y * vec2(-radial.y, radial.x);
     float along = dot(worldGradient, rayPlane) / incidence;
+    // The projected norm bounds both screen directions, including grazing stretch.
     return pixel * sqrt(dot(worldGradient, worldGradient) + along * along);
   }
 
@@ -206,10 +207,10 @@ export const fragmentShader = /* glsl */ `
     vec2 tangent = vec2(-flow.y, flow.x);
     float x = projectedFootprint(vec2(flow.x + shear.x * tangent.x, shear.y * tangent.x), radial, rayPlane, incidence, pixel);
     float y = projectedFootprint(vec2(flow.y + shear.x * tangent.y, shear.y * tangent.y), radial, rayPlane, incidence, pixel);
-    return max(x, y);
+    return length(vec2(x, y));
   }
 
-  vec2 gasPattern(float r, float inner, float angle, float orbit, vec2 rayPlane, float incidence, float pixel) {
+  vec2 gasPattern(float r, float angle, float orbit, vec2 rayPlane, float incidence, float pixel) {
     vec2 radial = vec2(cos(angle), sin(angle));
     vec2 flow = vec2(cos(angle + orbit), sin(angle + orbit));
     vec2 tangent = vec2(-flow.y, flow.x);
@@ -221,11 +222,10 @@ export const fragmentShader = /* glsl */ `
     float clump = mix(0.5, clumpNoise.x, clumpWeight);
     float eddy = mix(0.5, eddyNoise.x, eddyWeight);
     vec2 warpGradient = 0.12 * 0.65 * clumpWeight * clumpNoise.yz + 0.025 * 1.8 * eddyWeight * eddyNoise.yz;
-    // Constant-phase strands trail the flow, with a smaller pitch at the inner rim.
-    vec2 winding = vec2(-22.0 - 8.0 * inner / r - 1.5 * orbit, 1.0)
+    // Advect Cartesian noise without repeatedly wrapping its lattice with radius.
+    vec2 winding = vec2(-1.5 * orbit, 1.0)
       + r * vec2(dot(warpGradient, flow - 1.5 * orbit * tangent), dot(warpGradient, tangent));
-    float woundAngle = angle + orbit - 22.0 * log(r / inner) - 8.0 * (1.0 - inner / r)
-      + 0.12 * (clump - 0.5) + 0.025 * (eddy - 0.5);
+    float woundAngle = angle + orbit + 0.12 * (clump - 0.5) + 0.025 * (eddy - 0.5);
     vec2 wound = vec2(cos(woundAngle), sin(woundAngle));
     float threadPixel = flowFootprint(wound, winding, radial, rayPlane, incidence, pixel);
     float filament = filteredNoise(r * wound * 0.7 + 21.8, threadPixel * 0.7);
@@ -233,9 +233,13 @@ export const fragmentShader = /* glsl */ `
     float fine = filteredNoise(r * wound * 3.5 + 4.2, threadPixel * 3.5);
     float lane = 1.0 - smoothstep(0.12, 0.3, filament);
     float bright = smoothstep(0.62, 0.85, threads);
+    // Filaments lose contrast before the edge; only irregular gas survives there.
+    float outer = smoothstep(5.8, 7.25, r);
+    float structure = (0.36 + filament * 0.45 + threads * 0.7 + fine * 0.4 + bright * 0.32) * (1.0 - lane * 0.65);
     float density = (0.58 + clump * 0.65 + eddy * 0.3)
-      * (0.36 + filament * 0.45 + threads * 0.7 + fine * 0.4 + bright * 0.32) * (1.0 - lane * 0.65);
-    return vec2(filament, density);
+      * mix(structure, 1.12, outer);
+    float edgeGas = 0.5 + 0.08 * (clump - 0.5) + 0.04 * (eddy - 0.5);
+    return vec2(mix(filament, edgeGas, outer), density);
   }
 
   vec3 diskEmission(vec3 position, vec3 ray, vec3 normal, float pixelFootprint) {
@@ -246,14 +250,14 @@ export const fragmentShader = /* glsl */ `
     vec3 axisY = normalize(cross(normal, vec3(1.0, 0.0, 0.0)));
     vec2 p = vec2(position.x, dot(position, axisY));
     vec2 rayPlane = vec2(ray.x, dot(ray, axisY));
-    float incidence = max(abs(dot(ray, normal)), 0.035);
+    float incidence = max(abs(dot(ray, normal)), 0.001);
     float angle = atan(p.y, p.x);
     float rate = (0.22 + uSpin * 0.08) / pow(r / 3.0, 1.5);
     // Renew eddies at zero blend weight so indefinite shear never erases all detail.
     float age = mod(uTime, 16.0);
     float blend = 0.5 - 0.5 * cos(age * (2.0 * PI / 16.0));
-    vec2 gas = mix(gasPattern(r, inner, angle, mod(uTime + 8.0, 16.0) * rate, rayPlane, incidence, pixelFootprint),
-      gasPattern(r, inner, angle, age * rate, rayPlane, incidence, pixelFootprint), blend);
+    vec2 gas = mix(gasPattern(r, angle, mod(uTime + 8.0, 16.0) * rate, rayPlane, incidence, pixelFootprint),
+      gasPattern(r, angle, age * rate, rayPlane, incidence, pixelFootprint), blend);
     float filament = gas.x;
     float density = gas.y;
     float aa = max(footprint * 0.5, 0.003);
@@ -438,7 +442,6 @@ export const fragmentShader = /* glsl */ `
     vec3 orbitRadial = radial;
     vec3 orbitTangent = tangent;
     vec3 position = uCameraPosition;
-    vec3 velocity = coordinateRay;
     vec3 outgoing = initialRay;
 
     // RK4 solves u'' + u = 1.5 L u^2; the reference uses identical stages and step rules.
@@ -481,10 +484,21 @@ export const fragmentShader = /* glsl */ `
       float plane0 = dot(position, normal);
       float plane1 = dot(nextPosition, normal);
       if (uLayers.x > 0.5 && plane0 * plane1 < 0.0) {
-        float fraction = plane0 / (plane0 - plane1);
-        vec3 crossing = mix(position, nextPosition, fraction);
+        // The orbital plane fixes the crossing angle independently of radius.
+        float planeRadial = dot(orbitRadial, normal);
+        float planeTangent = dot(orbitTangent, normal);
+        float fraction = atan(abs(planeRadial), abs(planeTangent)) / h;
+        float slope0 = h * v, slope1 = h * nextV;
+        float quadratic = 3.0 * (nextU - u) - 2.0 * slope0 - slope1;
+        float cubic = 2.0 * (u - nextU) + slope0 + slope1;
+        float crossingU = u + fraction * (slope0 + fraction * (quadratic + fraction * cubic));
+        float crossingV = (slope0 + fraction * (2.0 * quadratic + fraction * 3.0 * cubic)) / h;
+        vec3 crossingRadial = normalize(orbitRadial * abs(planeTangent) + orbitTangent * abs(planeRadial));
+        vec3 crossingTangent = normalize(-orbitRadial * abs(planeRadial) + orbitTangent * abs(planeTangent));
+        vec3 crossing = crossingRadial / crossingU;
+        vec3 crossingVelocity = normalize(-crossingV * crossingRadial + crossingU * crossingTangent);
         float diskPixel = pixelAngle * observerRadius / lapse * (1.0 + 0.2 / max(abs(impact - critical), 0.03));
-        vec3 emission = diskEmission(crossing, velocity, normal, diskPixel);
+        vec3 emission = diskEmission(crossing, crossingVelocity, normal, diskPixel);
         light += emission * transmittance;
         transmittance *= exp(-18.0 * length(emission));
       }
@@ -496,7 +510,6 @@ export const fragmentShader = /* glsl */ `
         light += coronaColor * corona * segmentLength * transmittance;
       }
       position = nextPosition;
-      velocity = nextVelocity;
       orbitRadial = nextRadial;
       orbitTangent = nextTangent;
       outgoing = nextVelocity;

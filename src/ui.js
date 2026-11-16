@@ -83,7 +83,15 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
       <div class="metric"><span class="metric-label">SCHWARZSCHILD RADIUS</span><span class="metric-value"><span data-readout="radius">295.33 M</span><small>km</small></span></div>
       <div class="metric"><span class="metric-label">OBSERVER DISTANCE</span><span class="metric-value"><span data-readout="cameraDistance">17.02</span><small>rₛ</small></span></div>
       <div class="metric"><span class="metric-label">SHADOW</span><span class="metric-value"><span data-readout="shadowFraction">0.3</span><small>% OF SKY</small></span></div>
-      <div class="probe-readout"><span class="probe-status"><span class="probe-light"></span><span data-readout="probeState">PROBE STANDBY</span></span><span class="probe-factor" data-readout="probeDilation">—</span></div>
+      <section class="probe-readout" aria-label="Probe signal">
+        <div class="probe-status"><span class="probe-light" aria-hidden="true"></span><span data-readout="probeState">PROBE STANDBY</span><span class="probe-flashes" data-readout="probeFlashes"></span></div>
+        <dl class="probe-values">
+          <div><dt>SEEN AT</dt><dd><span data-readout="probeRadius">—</span><small>rₛ</small></dd></div>
+          <div><dt>SIGNAL</dt><dd><span data-readout="probeSignal">—</span><small>ν/ν₀</small></dd></div>
+          <div><dt>PROBE CLOCK</dt><dd><span data-readout="probeClock">—</span><small>rₛ/c</small></dd></div>
+          <div><dt>YOUR CLOCK</dt><dd><span data-readout="probeObserverClock">—</span><small>rₛ/c</small></dd></div>
+        </dl>
+      </section>
     </section>
 
     <div class="simulation-time" aria-label="Observer clock"><div class="eyebrow">LOCAL PROPER TIME <span data-readout="dilation">τ / t 0.970</span></div><div class="clock-row"><time data-readout="clock">00:00:00.00</time><button class="icon-button pause-button" data-action="pause" aria-label="Pause simulation" aria-pressed="false">${icon('pause')}</button></div></div>
@@ -200,9 +208,15 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
     if (r.probeState !== undefined) {
       const state = String(r.probeState).toLowerCase();
       const active = state !== 'idle' && state !== 'standby';
-      hud.classList.toggle('probe-active', active);
-      write('probeState', state === 'frozen' ? 'PROBE · AT HORIZON' : active ? 'PROBE · FALLING' : 'PROBE STANDBY');
-      write('probeDilation', active && Number.isFinite(r.probeDilation) ? `${r.probeDilation.toFixed(3)}×` : '—');
+      hud.classList.toggle('probe-active', active && state !== 'lost');
+      hud.dataset.probeState = state;
+      hud.style.setProperty('--probe-pulse', active && state !== 'lost' ? r.probe.pulse : 0);
+      write('probeFlashes', active ? `FLASH ${r.probe.flashCount} of ${r.probe.flashTotal}` : '');
+      write('probeState', state === 'lost' ? 'SIGNAL LOST' : state === 'fading' ? 'SIGNAL FADING' : active ? 'PROBE · FALLING' : 'PROBE STANDBY');
+      for (const [key, value, digits] of [
+        ['probeRadius', r.probe?.radius, 3], ['probeSignal', r.probe?.signal, 3],
+        ['probeClock', r.probe?.properElapsed, 3], ['probeObserverClock', r.probe?.observerElapsed, 3],
+      ]) write(key, active && Number.isFinite(value) ? value.toFixed(digits) : '—');
     }
     if (r.paused !== undefined && r.paused !== lastPaused) {
       lastPaused = r.paused;

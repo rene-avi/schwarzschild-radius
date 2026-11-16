@@ -29,7 +29,12 @@ export const fragmentShader = /* glsl */ `
   uniform float uDiskIntensity;
   uniform vec3 uProbePosition;
   uniform float uProbeRadius;
-  uniform float uProbeDilation;
+  uniform float uProbeSignal;
+  uniform float uProbePulse;
+  uniform float uProbeExtent;
+  uniform vec4 uProbeTrail[8];
+  uniform float uProbeTrailAge[8];
+  uniform int uProbeTrailCount;
 
   const float PI = 3.14159265359;
 
@@ -144,22 +149,75 @@ export const fragmentShader = /* glsl */ `
     return (-b - sqrt(discriminant)) / a;
   }
 
+  vec3 probeColor(float g) {
+    vec3 red = vec3(1.0, 0.018, 0.002);
+    vec3 amber = vec3(1.0, 0.32, 0.025);
+    vec3 cyan = vec3(0.65, 0.92, 1.0);
+    return g < 0.5 ? mix(red, amber, smoothstep(0.02, 0.5, g))
+      : mix(amber, cyan, smoothstep(0.5, 0.95, g));
+  }
+
+  float probeGlow(vec3 origin, vec3 direction, float segmentLength, vec3 center, float width) {
+    float along = dot(center - origin, direction);
+    float closest = clamp(along, 0.0, segmentLength);
+    float offset = length(origin + direction * closest - center) / width;
+    // Only the segment containing the closest approach contributes to the beacon.
+    return along >= 0.0 && along < segmentLength ? exp(-offset * offset * 0.5) : 0.0;
+  }
+
+  float probeGlint(vec3 origin, vec3 direction, float segmentLength, float pixelWidth) {
+    float along = dot(uProbePosition - origin, direction);
+    if (along < 0.0 || along >= segmentLength) return 0.0;
+    vec3 offset = origin + direction * along - uProbePosition;
+    // Keep both glint axes perpendicular to the local bent ray to bound its footprint.
+    vec3 right = uCameraRight - direction * dot(uCameraRight, direction);
+    if (length(right) < 0.001) right = uCameraUp - direction * dot(uCameraUp, direction);
+    right = normalize(right);
+    vec2 p = abs(vec2(dot(offset, right), dot(offset, cross(direction, right)))) / pixelWidth;
+    return exp(-p.x * 0.28 - p.y * 2.4) + exp(-p.y * 0.28 - p.x * 2.4);
+  }
+
   vec3 probeEmission(vec3 origin, vec3 direction, float segmentLength) {
-    if (uProbeRadius < 0.0 || distance(origin, uProbePosition) > segmentLength + 0.7) return vec3(0.0);
-    vec3 radial = normalize(uProbePosition);
-    vec3 side = normalize(cross(radial, vec3(0.0, 1.0, 0.001)));
-    vec3 up = cross(side, radial);
-    vec3 relative = origin - uProbePosition;
-    vec3 localOrigin = vec3(dot(relative, side), dot(relative, up), dot(relative, radial));
-    vec3 localDirection = vec3(dot(direction, side), dot(direction, up), dot(direction, radial));
-    float stretch = min(4.0, 0.8 + 0.22 / max(uProbeDilation, 0.04));
-    float hull = ellipsoidHit(localOrigin, localDirection, vec3(0.035, 0.025, 0.13 * stretch));
-    float wing = ellipsoidHit(localOrigin, localDirection, vec3(0.15 / sqrt(stretch), 0.014, 0.027 * stretch));
-    float hit = 0.0;
-    if (hull > 0.0 && hull < segmentLength) hit = 1.0;
-    if (wing > 0.0 && wing < segmentLength) hit = 1.0;
-    vec3 color = mix(vec3(1.0, 0.055, 0.004), vec3(0.5, 0.88, 1.0), smoothstep(0.06, 0.8, uProbeDilation));
-    return color * hit * (1.0 + uProbeDilation * 3.0);
+    if (uProbeRadius < 0.0) return vec3(0.0);
+    float pixelAngle = ${2 * Math.tan(G.halfFov)} / uResolution.y;
+    float cameraDistance = distance(uCameraPosition, uProbePosition);
+    // A coincident camera has no projected craft direction.
+    if (cameraDistance < 0.000001) return vec3(0.0);
+    float observerLapse = sqrt(1.0 - uLensing / length(uCameraPosition));
+    float worldPixel = cameraDistance * pixelAngle / observerLapse;
+    // The bound includes all past flash positions, even when they are far from the hull.
+    if (distance(origin, uProbePosition) > segmentLength + max(uProbeExtent, 24.0 * worldPixel)) return vec3(0.0);
+    // Bound angular hull size even when the view passes through the craft.
+    float hullScale = min(1.0, worldPixel * 9.0 / 0.15);
+    float apparentSignal = sqrt(clamp(uProbeSignal, 0.0, 1.0));
+    float beaconWidth = worldPixel * mix(1.2, 4.0, apparentSignal);
+    vec3 light = vec3(0.0);
+    if (distance(origin, uProbePosition) < segmentLength + max(0.2 * hullScale, 24.0 * worldPixel)) {
+      vec3 radial = normalize(uProbePosition);
+      vec3 side = normalize(cross(radial, vec3(0.0, 1.0, 0.001)));
+      vec3 up = cross(side, radial);
+      vec3 relative = origin - uProbePosition;
+      vec3 localOrigin = vec3(dot(relative, side), dot(relative, up), dot(relative, radial));
+      vec3 localDirection = vec3(dot(direction, side), dot(direction, up), dot(direction, radial));
+      float hull = ellipsoidHit(localOrigin, localDirection, vec3(0.035, 0.025, 0.13) * hullScale);
+      float wing = ellipsoidHit(localOrigin, localDirection, vec3(0.15, 0.014, 0.027) * hullScale);
+      float hit = (hull > 0.0 && hull < segmentLength) || (wing > 0.0 && wing < segmentLength) ? 1.0 : 0.0;
+      float glow = probeGlow(origin, direction, segmentLength, uProbePosition, beaconWidth);
+      float brightness = max(pow(uProbeSignal, 3.0), 0.045);
+      float glint = probeGlint(origin, direction, segmentLength, worldPixel * mix(0.6, 1.0, apparentSignal));
+      light += probeColor(uProbeSignal) * brightness
+        * (hit * (1.4 + 2.0 * uProbePulse) + glow * (0.55 + 4.0 * uProbePulse) + glint * 3.0 * uProbePulse);
+    }
+    for (int i = 0; i < 8; i++) {
+      if (i >= uProbeTrailCount) break;
+      vec3 center = uProbeTrail[i].xyz;
+      float width = max(distance(uCameraPosition, center), 0.00001) * pixelAngle / observerLapse * 1.25;
+      if (distance(origin, center) > segmentLength + 4.0 * width) continue;
+      float glow = probeGlow(origin, direction, segmentLength, center, width);
+      float fade = 0.65 * pow(max(0.0, 1.0 - uProbeTrailAge[i] / 12.0), 1.5);
+      light += probeColor(uProbeTrail[i].w) * max(pow(uProbeTrail[i].w, 3.0), 0.08) * glow * fade;
+    }
+    return light;
   }
 
   vec3 observedSky(vec3 ray, float pixelAngle, float observerShift) {
@@ -204,7 +262,9 @@ export const fragmentShader = /* glsl */ `
     bool captured = mu > shadowCos;
     float vignette = 1.0 - smoothstep(0.35, 1.9, length(vUv * 2.0 - 1.0)) * 0.18;
     if (sinPsi < ${G.radialEpsilon.toFixed(6)}) {
-      gl_FragColor = vec4(captured ? vec3(0.0) : observedSky(initialRay, pixelAngle, 1.0 / lapse) * vignette, 1.0);
+      float probeLength = mu > 0.0 ? max(0.0, observerRadius - surface) : observerRadius + 8.0;
+      vec3 beacon = uLayers.w > 0.5 ? probeEmission(uCameraPosition, initialRay, probeLength) : vec3(0.0);
+      gl_FragColor = vec4((captured ? vec3(0.0) : observedSky(initialRay, pixelAngle, 1.0 / lapse)) * vignette + beacon * vignette, 1.0);
       return;
     }
 

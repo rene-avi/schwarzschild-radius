@@ -102,10 +102,16 @@ input[type="range"]:hover::-webkit-slider-thumb { box-shadow: 0 0 0 5px #e9ad752
 .metric-label { display: block; color: #656971; font: 7px var(--mono); letter-spacing: 1.2px; margin-bottom: 6px; }
 .metric-value { display: flex; align-items: baseline; gap: 7px; color: #c8c6be; font: 16px var(--mono); font-weight: 300; letter-spacing: -.4px; }
 .metric-value small { font-size: 9px; color: #777a7e; }
-.probe-readout { border-top: 1px solid var(--line); padding-top: 13px; margin-top: 20px; display: flex; justify-content: space-between; align-items: center; }
+.probe-readout { border-top: 1px solid var(--line); padding-top: 13px; margin-top: 20px; }
+.probe-values { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; margin: 13px 0 0; }
+.probe-values dt { color: #a4a5a8; font: 7px var(--mono); letter-spacing: .5px; }
+.probe-values dd { margin: 5px 0 0; color: #d2cdc3; font: 12px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.probe-values small { margin-left: 5px; color: #92938e; font-size: 7px; }
+.probe-active[data-probe-state="fading"] .probe-light { background: #df5430; border-color: #df5430; box-shadow: 0 0 8px #df543055; }
+[data-probe-state="lost"] .probe-status { color: #a87a6c; }
 .probe-status { display: flex; align-items: center; gap: 7px; color: #636770; font: 7px var(--mono); letter-spacing: .75px; }
-.probe-light { height: 4px; width: 4px; border: 1px solid #636770; border-radius: 50%; }
-.probe-factor { color: #a4a69f; font: 9px var(--mono); }
+.probe-light { height: 4px; width: 4px; flex-shrink: 0; border: 1px solid #636770; border-radius: 50%; opacity: calc(.25 + .75 * var(--probe-pulse, 0)); }
+.probe-flashes { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; letter-spacing: 0; }
 .probe-active .probe-light { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 8px #e9ad7566; }
 .probe-active .probe-status { color: #c5ae96; }
 
@@ -231,7 +237,10 @@ input[type="range"]:hover::-webkit-slider-thumb { box-shadow: 0 0 0 5px #e9ad752
   .metric:nth-child(4) { display: none; }
   .probe-readout { margin-top: 12px; padding-top: 10px; }
   .probe-status { font-size: 6px; gap: 5px; letter-spacing: .2px; }
-  .probe-factor { font-size: 8px; }
+  .probe-values { gap: 9px 7px; margin-top: 10px; }
+  .probe-values dt { font-size: 6px; letter-spacing: .1px; }
+  .probe-values dd { font-size: 10px; }
+  .probe-values small { font-size: 6px; margin-left: 3px; }
   .simulation-time { left: 23px; right: 23px; bottom: 126px; display: flex; align-items: center; justify-content: space-between; }
   .simulation-time .eyebrow { flex-direction: column; gap: 6px; }
   .clock-row { margin: 0; gap: 12px; }

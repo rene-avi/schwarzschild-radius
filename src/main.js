@@ -29,8 +29,16 @@ const camera = new ObservatoryCamera(canvas, (mode) => ui?.setMode(mode));
 function action(type) {
   switch (type) {
     case 'probe':
-      probe = createProbe();
-      ui.setNotice('PROBE 01 RELEASED · Tracking gravitational descent');
+      {
+        const tilt = settings.tilt * Math.PI / 180;
+        const normal = [0, Math.cos(tilt), -Math.sin(tilt)];
+        const radial = camera.position.clone().normalize().multiplyScalar(Math.cos(25 * Math.PI / 180));
+        radial.addScaledVector(camera.right, Math.sin(25 * Math.PI / 180));
+        const clearance = Math.max(0, 0.18 - radial.toArray().reduce((sum, v, i) => sum + v * normal[i], 0));
+        const direction = radial.toArray().map((value, i) => value + clearance * normal[i]);
+        probe = createProbe({ observerRadius: Math.max(7, camera.radius), direction });
+      }
+      ui.setNotice('Watch the beacon: one flash per second of its own time.');
       break;
     case 'cinematic':
       camera.setMode(camera.mode === 'cinematic' ? 'orbit' : 'cinematic');
@@ -167,7 +175,7 @@ function animate(now) {
   ui.update({
     fps, quality: scene.quality, qualityMode: qualityController.qualityMode, mass: settings.mass,
     radius: schwarzschildRadius(settings.mass), dilation, clock,
-    probeDilation: probe?.dilation ?? 1, probeState: probe?.state ?? 'idle',
+    probe, probeState: probe?.state ?? 'idle',
     cameraDistance: camera.radius, shadowFraction: camera.shadowFraction, paused,
     cinematic: camera.mode === 'cinematic', fly: camera.mode === 'fly',
   });
@@ -182,6 +190,7 @@ const debug = new URLSearchParams(window.location.search).get('debug') === '1' ?
     }
   },
   setPaused(value) { if (typeof value === 'boolean') paused = value; },
+  advanceProbe(dt) { if (probe) updateProbe(probe, dt, settings.timeScale); },
 }) : null;
 
 // Debug mutation exists only behind the explicit flag; normal telemetry is copied.
@@ -191,7 +200,7 @@ Object.defineProperty(window, 'eventHorizon', {
     mode: camera.mode, radius: camera.radius, theta: camera.theta, elevation: camera.elevation,
     dilation: timeDilation(camera.radius, settings.lensing), gazeYaw: camera.gazeYaw, gazePitch: camera.gazePitch,
     shadowFraction: camera.shadowFraction,
-  }, probe: probe ? { ...probe } : null, paused, clock, fps, renderedFrames,
+  }, probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })) } : null, paused, clock, fps, renderedFrames,
   quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),
 });
 

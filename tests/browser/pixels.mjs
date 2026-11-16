@@ -37,7 +37,12 @@ export function pixels(png) {
       decoded[y * stride + x] = (encoded[y * (stride + 1) + x + 1] + predictor) & 255;
     }
   }
-  return { width, height, luma(x, y) {
+  return { width, height, rgb(x, y) {
+    x = Math.round(x); y = Math.round(y);
+    if (x < 0 || y < 0 || x >= width || y >= height) return null;
+    const i = y * stride + x * channels;
+    return [decoded[i], decoded[i + 1], decoded[i + 2]];
+  }, luma(x, y) {
     x = Math.round(x); y = Math.round(y);
     if (x < 0 || y < 0 || x >= width || y >= height) return null;
     const i = y * stride + x * channels;

@@ -34,7 +34,12 @@ export class BlackHoleScene {
       uQuality: { value: qualityForScale(1).qualityIndex },
       uProbePosition: { value: new THREE.Vector3(0, 0, 0) },
       uProbeRadius: { value: -1 },
-      uProbeDilation: { value: 1 },
+      uProbeSignal: { value: 1 },
+      uProbePulse: { value: 0 },
+      uProbeExtent: { value: 1.5 },
+      uProbeTrail: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) },
+      uProbeTrailAge: { value: Array(8).fill(0) },
+      uProbeTrailCount: { value: 0 },
       uDiskIntensity: { value: 1 },
     };
     this.material = new THREE.ShaderMaterial({ vertexShader, fragmentShader, uniforms: this.uniforms, depthTest: false, depthWrite: false });
@@ -86,14 +91,21 @@ export class BlackHoleScene {
     u.uTilt.value = settings.tilt;
     u.uLensing.value = settings.lensing;
     u.uDiskIntensity.value = 0.55 + settings.temperature / 12000;
-    if (probe) {
-      // A bounded near-side descent stays observable as coordinate time freezes.
-      const angle = 0.8 + 0.45 * (1 - Math.exp(-probe.angle));
-      const tilt = THREE.MathUtils.degToRad(settings.tilt);
-      u.uProbePosition.value.set(Math.cos(angle), Math.sin(tilt) * Math.sin(angle) + 0.12, Math.sin(angle) * Math.cos(tilt)).normalize().multiplyScalar(probe.radius);
+    if (probe && probe.state !== 'lost') {
+      u.uProbePosition.value.fromArray(probe.direction).multiplyScalar(probe.radius);
       u.uProbeRadius.value = probe.radius;
-      u.uProbeDilation.value = probe.dilation;
-    } else u.uProbeRadius.value = -1;
+      u.uProbeSignal.value = probe.signal;
+      u.uProbePulse.value = probe.pulse;
+      u.uProbeExtent.value = 1.5 + Math.max(0, ...probe.trail.map(event => event.radius - probe.radius));
+      u.uProbeTrailCount.value = probe.trail.length;
+      probe.trail.forEach((event, i) => {
+        u.uProbeTrail.value[i].set(...probe.direction.map(value => value * event.radius), event.signal);
+        u.uProbeTrailAge.value[i] = event.age;
+      });
+    } else {
+      u.uProbeRadius.value = -1;
+      u.uProbeTrailCount.value = 0;
+    }
     this.film.uniforms.uTime.value = simulationTime;
     this.composer.render();
   }

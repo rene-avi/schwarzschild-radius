@@ -72,7 +72,7 @@ Shortcuts work while a range slider has focus. Arrow keys, Home, End, PageUp and
 
 The help dialog lists every shortcut; the one-line reminder shows C, F, P, Space and R. While help is open, other shortcuts and camera keys are ignored. Escape closes the dialog natively without changing camera mode; `/` also closes it.
 
-The HUD reports mass, Schwarzschild radius, observer distance, SHADOW (percentage of the entire local sky covered by the shadow), local proper time, probe dilation, frame rate, and quality mode and scale. At widths of 760 px or less the panel starts closed and its toggle opens it. Above 760 px the panel is always visible. Crossing that breakpoint restores the new layout's default state.
+The HUD reports mass, Schwarzschild radius, observer distance, SHADOW (percentage of the entire local sky covered by the shadow), local proper time, the received probe event and signal with both clocks, frame rate, and quality mode and scale. At widths of 760 px or less the panel starts closed and its toggle opens it. Above 760 px the panel is always visible. Crossing that breakpoint restores the new layout's default state.
 
 ### Parameters and presets
 
@@ -106,7 +106,7 @@ c = 299,792,458 m/s
 M☉ = 1.98847 × 10³⁰ kg
 ```
 
-One solar mass gives approximately 2.953 km. Scene lengths use `r / rₛ`, so changing mass updates the physical scale without changing the dimensionless image or camera framing. The animation rate is an artistic control and does not automatically scale with `GM/c³`.
+One solar mass gives approximately 2.953 km. Scene lengths use `r / rₛ`, so changing mass updates the physical scale without changing the dimensionless image or camera framing. At time scale 1, one simulation second is one rₛ/c; multiply dimensionless times by the reported Schwarzschild radius divided by c to obtain SI seconds. Changing mass leaves the animation rate unchanged.
 
 A stationary clock outside the horizon ticks relative to a distant clock by
 
@@ -114,7 +114,7 @@ A stationary clock outside the horizon ticks relative to a distant clock by
 dτ/dt = √(1 − rₛ/r)
 ```
 
-The on-screen clock integrates this factor at the observer's radius, using the effective radius L when the lensing control differs from 1. Approaching the horizon visibly slows it. The utility returns zero at or inside the horizon as a display limit; a stationary observer cannot physically exist there. Moving observers and freely falling clocks require additional velocity and trajectory calculations, which this visualization does not solve.
+The on-screen clock integrates this factor at the observer's radius, using the effective radius L when the lensing control differs from 1. Approaching the horizon visibly slows it. The utility returns zero at or inside the horizon as a display limit; a stationary observer cannot physically exist there. The probe separately solves a freely falling clock along a radial geodesic. The viewing camera remains a controlled static-observer view; its movement does not model velocity aberration.
 
 ### Curved rays, disk images, and the photon ring
 
@@ -163,13 +163,34 @@ Hashed angular cells create point stars; fractal noise creates the galaxy band a
 
 ### The probe
 
-The ship is constructed from intersected procedural hull and wing ellipsoids. Its observer-facing radius follows
+The probe falls radially from rest at r₀=7 in a Schwarzschild spacetime with rₛ=c=1. Its trajectory and onboard proper clock use the exact cycloid:
 
 ```text
-r(t)/rₛ = 1.015 + (7 − 1.015) exp(−0.23t)
+E = √(1 − 1/r₀), f = 1 − 1/r
+r = (r₀/2)(1 + cos η)
+τ = (r₀^1.5/2)(η + sin η)
+(dr/dτ)² = E² − f, dt/dτ = E/f
 ```
 
-It stretches along its radial direction and fades toward red as its displayed dilation decreases. The animation freezes when it is within `0.003 rₛ` of the `1.015 rₛ` visual limit, after roughly 33 observer seconds at 1× speed. This is an illustrative depiction of coordinate-time freezing, not an exact timelike geodesic or a simulation of tidal structural failure. Its proper-time accumulator uses the stationary-clock factor, so it should not be interpreted as a physical freefall clock.
+The onboard clock reaches the horizon at τ=28.3939046925 and r=0 at τ=29.0915550872. Schwarzschild coordinate time t diverges logarithmically at the horizon. An analytic expression for t(r), followed by bisection, determines the received emission event. Reception time T starts when the observer **sees the release**, so pressing P immediately starts the visible fall and both probe-panel clocks:
+
+```text
+r*(r) = r + ln(r − 1)
+absolute arrival = t_emission + r*(r_observer) − r*(r_emission)
+release light delay = r*(r_observer) − r*(r₀)
+T = absolute arrival − release light delay = t_emission + r*(r₀) − r*(r_emission)
+g = ν_received/ν_emitted = f / [(E + √(E² − f)) √(1 − 1/r_observer)]
+```
+
+These frequency and delay expressions are exact for an outward radial photon received by a fixed static observer. The frequency includes both gravitational redshift and the infaller's Doppler shift; it starts at √(1−1/7)/√(1−1/r_observer), tends to zero, and has late-time ln(g) slope −1/2 against coordinate reception time T. The receiver is fixed at the camera's radius when released, or r=7 if the camera is inside the release sphere. Subsequent camera motion changes the view. Probe physics always uses rₛ=1, independent of the artistic lensing control.
+
+With the default receiver at r=23, the release light delay is 17.2992829841 coordinate units. This remains in the absolute arrival model; the displayed timeline subtracts it. Every later emission still arrives with its additional light-travel delay relative to the release signal.
+
+The panel shows **SEEN AT** (received emission radius), **SIGNAL** (g, three decimals), **PROBE CLOCK** (received onboard τ), and **YOUR CLOCK** (fixed receiver proper time T√(1−1/r_observer) since seeing release). Both clocks use rₛ/c. Status changes from **PROBE · FALLING** to **SIGNAL FADING** below g=0.25 and **SIGNAL LOST** at the g=0.02 cutoff. At the default radius, loss occurs at T≈47.596, receiver time≈46.550, and received onboard time≈28.353, just below the finite horizon value. The last four values remain after loss. Pause and time scale apply to the reception timeline; frame subdivision does not change the trajectory, clocks, pulses or received trail.
+
+The beacon flashes at every whole unit of received onboard proper time, with a release pulse at τ=0. The HUD light follows the same pulse and **FLASH n of 28** counts received flashes 1 through 28. Their reception intervals lengthen as g falls: about 1.098 between flashes 1 and 2, and 4.191 between flashes 27 and 28. There is no flash 29 before the horizon. The pulse phase comes directly from the fractional received τ, so it freezes when paused.
+
+The release direction is fixed relative to the camera at about 25° from the near-side radial axis, lifted above the disk plane in the default view. The hull and wings are procedural ellipsoids. A steady glow of roughly 10-pixel radius near g=1 shrinks with g; short flashes add a soft four-point glint. Up to eight dots mark past received flash positions from the last 12 coordinate units, fading with reception age. The hull's apparent size remains capped for close views. Glow size, pulse shape, trail persistence, white-cyan/amber/deep-red colours, g³ brightness with a visibility floor, and disappearance at the signal cutoff are display choices. The off-axis lensed image uses this single radial signal history; it does not calculate separate photon travel times or direction-dependent Doppler shifts for every bent ray, tidal structural damage, or communication with a moving receiver.
 
 ### Post-processing and performance
 
@@ -209,13 +230,14 @@ tests/run.mjs               Named in-process Node test runner
 tests/browser/run.mjs       Standalone Chromium interaction and pixel checks
 tests/browser/checks/observer.mjs  Independent shadow measurements from screenshots
 tests/browser/checks/touch.mjs     Real multi-touch CDP input in a touch context
+tests/browser/checks/probe.mjs     Received signal, HUD, pixel pulses, colour, visibility and size
 ```
 
 `npm test` runs every `tests/*.test.js` through `node tests/run.mjs`, using Node's programmatic test API in one process. It prints `TOTAL <n> pass <p> fail <f>` and fails if any test fails or none run. Tests cover physics, geodesics, camera behavior, presets, shortcut policy and documentation, and at least 120 simulated seconds per quality device scenario, without wall-clock performance thresholds. The build regression compiles the actual application under `tmp/` and checks that only one HTML file remains, with embedded styles and JavaScript that parses as a classic script.
 
-`npm run test:browser` builds a standalone file under `tmp/`, serves it on an ephemeral localhost port and runs all modules in `tests/browser/checks/` with the installed Playwright Chromium. No browser downloads are performed. It checks responsive controls, keyboard focus behavior, custom parameters, complete help, fixed quality modes, console errors and foreign requests, plus shadow boundaries measured along eight azimuths at r=23, 8 and 3, the straight horizon at r=1.5, and real two-finger pinch/free look. Failed checks and observer reference images are saved in `tmp/browser-out/`; review screenshots at 375 px and the quality panel on a real GPU for visual acceptance.
+`npm run test:browser` builds a standalone file under `tmp/`, serves it on an ephemeral localhost port and runs all modules in `tests/browser/checks/` with the installed Playwright Chromium. No browser downloads are performed. It checks responsive controls, keyboard focus behavior, custom parameters, complete help, fixed quality modes, console errors and foreign requests, plus shadow boundaries measured along eight azimuths at r=23, 8 and 3, the straight horizon at r=1.5, real two-finger pinch/free look, and probe visibility, colour progression, received clocks, pixel-brightness pulses and their growing intervals, HUD synchronization, loss and bounded close-up size. Failed checks and observer reference images are saved in `tmp/browser-out/`; review screenshots at 375 px and the quality panel on a real GPU for visual acceptance.
 
-For a manual rendering check, confirm a luminous disk and dark shadow, orbit to reveal the secondary disk image, compare the bright and dim sides, switch all presets, release a probe, and try fly-in and cinematic modes. Monitor the console for shader errors and the HUD for frame rate. `window.eventHorizon.getState()` exposes a copy of the current simulation telemetry for browser automation without allowing direct mutation, including `qualityMode` (`auto`, `high`, `balanced`, `performance`), `frameCap` (fps or `null`), `renderedFrames`, and camera `gazeYaw`, `gazePitch` (radians), and `shadowFraction` (0–1). Only `?debug=1` enables `window.eventHorizon.debug`: `setCamera({ radius, theta, elevation, yaw, pitch })` jumps without easing (angles in radians), `setLayers({ disk, sky, ring, probe })` accepts booleans, and `setPaused(bool)` sets simulation pause. No URL code or expressions are executed. Pause leaves the camera available.
+For a manual rendering check, confirm a luminous disk and dark shadow, orbit to reveal the secondary disk image, compare the bright and dim sides, switch all presets, release a probe, and try fly-in and cinematic modes. Monitor the console for shader errors and the HUD for frame rate. `window.eventHorizon.getState()` exposes a copy of the current simulation telemetry for browser automation without allowing direct mutation, including probe `radius`, `signal`, `properElapsed`, `observerElapsed`, coordinate `elapsed` since seeing release, `emissionTime` since emission of release, `observerRadius`, absolute `arrivalDelay`, shifted `lostTime`, `pulse`, `flashCount`, `flashTotal`, fixed `direction`, received flash `trail` (radius, proper time, signal, reception time and age) and `state` (`falling`, `fading`, `lost`), plus `qualityMode` (`auto`, `high`, `balanced`, `performance`), `frameCap` (fps or `null`), `renderedFrames`, and camera `gazeYaw`, `gazePitch` (radians), and `shadowFraction` (0–1). Only `?debug=1` enables `window.eventHorizon.debug`: `setCamera({ radius, theta, elevation, yaw, pitch })` jumps without easing (angles in radians), `setLayers({ disk, sky, ring, probe })` accepts booleans, `setPaused(bool)` sets simulation pause, and `advanceProbe(dt)` advances only the probe reception timeline by a nonnegative coordinate time step multiplied by the selected time scale (use while paused for deterministic screenshots). No URL code or expressions are executed. Pause leaves the camera available.
 
 ### Validation scope
 

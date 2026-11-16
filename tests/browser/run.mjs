@@ -1,0 +1,81 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { build } from 'vite';
+import { chromium } from 'playwright';
+
+const root = fileURLToPath(new URL('../../', import.meta.url));
+const outDir = join(root, 'tests/browser/out');
+let output;
+let server;
+let browser;
+let passed = 0;
+let failed = 0;
+
+try {
+  await mkdir(join(root, 'tmp'), { recursive: true });
+  await mkdir(outDir, { recursive: true });
+  output = await mkdtemp(join(root, 'tmp/browser-build-'));
+  await build({ root, logLevel: 'silent', build: { outDir: output, emptyOutDir: true } });
+  assert.deepEqual(await readdir(output), ['index.html']);
+  const html = await readFile(join(output, 'index.html'));
+  server = createServer((request, response) => {
+    if (request.url === '/favicon.ico') { response.writeHead(204); response.end(); return; }
+    if (request.url !== '/' && request.url !== '/index.html') { response.writeHead(404); response.end(); return; }
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    response.end(html);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const url = `http://127.0.0.1:${server.address().port}`;
+  browser = await chromium.launch({ headless: true, args: process.platform === 'darwin'
+    ? ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] : [] });
+  const modules = (await readdir(new URL('./checks/', import.meta.url))).filter(name => name.endsWith('.mjs')).sort();
+  for (const name of modules) {
+    const { checks } = await import(new URL(`./checks/${name}`, import.meta.url));
+    for (const check of checks) {
+      const page = await browser.newPage({ viewport: check.viewport || { width: 1440, height: 900 } });
+      page.setDefaultTimeout(15000);
+      const audit = { consoleErrors: [], foreignRequests: [] };
+      await page.route('**/*', route => new URL(route.request().url()).origin === url
+        ? route.continue() : route.abort('blockedbyclient'));
+      page.on('console', message => { if (message.type() === 'error') audit.consoleErrors.push(message.text()); });
+      page.on('pageerror', error => audit.consoleErrors.push(error.stack || error.message));
+      page.on('request', request => {
+        const address = new URL(request.url());
+        if (address.origin !== url) audit.foreignRequests.push(request.url());
+      });
+      try {
+        await page.goto(url, { waitUntil: 'load' });
+        await page.waitForFunction(() => window.eventHorizon?.getState().clock > 0);
+        await check.run({ page, url, outDir, audit });
+        assert.deepEqual(audit.consoleErrors, [], 'console or page errors');
+        assert.deepEqual(audit.foreignRequests, [], 'foreign-origin requests');
+        passed++;
+        console.log(`ok ${check.name}`);
+      } catch (error) {
+        failed++;
+        const screenshot = join(outDir, `${check.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.png`);
+        await page.screenshot({ path: screenshot }).catch(() => {});
+        console.error(`FAIL ${check.name}: ${error.stack || error}\nScreenshot: ${screenshot}`);
+      } finally {
+        await page.close();
+      }
+    }
+  }
+} catch (error) {
+  failed++;
+  console.error(`FAIL browser setup: ${error.stack || error}`);
+} finally {
+  try { await browser?.close(); } catch (error) { failed++; console.error(`FAIL browser cleanup: ${error}`); }
+  try { if (server?.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  catch (error) { failed++; console.error(`FAIL server cleanup: ${error}`); }
+  try { if (output) await rm(output, { recursive: true, force: true }); }
+  catch (error) { failed++; console.error(`FAIL build cleanup: ${error}`); }
+}
+console.log(`TOTAL ${passed + failed} pass ${passed} fail ${failed}`);
+process.exitCode = failed > 0 || passed === 0 ? 1 : 0;

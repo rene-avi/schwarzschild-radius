@@ -1,4 +1,5 @@
 import { Vector3, MathUtils } from 'three';
+import { allowsShortcut, shortcutForCode } from './shortcuts.js';
 
 const DEFAULT = { radius: 23, theta: 0.05, elevation: 0.23 };
 
@@ -40,7 +41,8 @@ export class ObservatoryCamera {
       this.desiredRadius = MathUtils.clamp(this.desiredRadius * Math.exp(event.deltaY * 0.001), 1.055, 65);
     }, { ...options, passive: false });
     window.addEventListener('keydown', (event) => {
-      if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
+      if (!allowsShortcut(event) || !shortcutForCode(event.code)?.camera) return;
+      event.preventDefault();
       this.keys.add(event.code);
     }, options);
     window.addEventListener('keyup', (event) => this.keys.delete(event.code), options);

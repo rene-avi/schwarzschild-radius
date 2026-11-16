@@ -50,23 +50,29 @@ The workflow in `.github/workflows/pages.yml` runs on pushes to `main` and can a
 
 ## Explore
 
-| Action | Control |
+| Control | Action |
 | --- | --- |
-| Orbit | Drag the scene with the left mouse button; A/D also rotate |
-| Zoom / thrust | Mouse wheel or W/S |
-| Approach the horizon | **Fly in** or F; press again to stop approaching |
-| Release / replace the probe | **Drop a probe** or P |
-| Scripted cinematic orbit | **Cinematic** or C |
-| Align the background star / Einstein ring | **Align a background star** or E |
-| Hide / reveal the HUD | H |
-| Pause / resume simulated time | Space or the clock's pause button |
-| Reset camera, probe, and clock | **Orbit**, the logo, or R |
-| Return to manual orbit | Escape; dragging or scrolling also restores manual control |
-| Help | **Shortcuts**; `/` displays a compact control reminder |
+| C | Toggle cinematic flight |
+| F | Toggle horizon approach |
+| P | Release or replace probe |
+| Space | Pause or resume simulation |
+| R | Reset camera, probe and clock |
+| E | Align a background star |
+| H | Hide or reveal HUD |
+| Escape | Return to manual orbit |
+| W | Thrust inward |
+| S | Thrust outward |
+| A | Rotate left |
+| D | Rotate right |
+| / | Toggle shortcuts and control reminder |
 
-Keyboard shortcuts are ignored while editing a control. Pause stops disk motion, the local clock, and the probe; the camera remains available. The camera stays outside the horizon, from 1.055 to 65 Schwarzschild radii. Cinematic mode follows a slow, repeating-height orbital path. Press H for a clean recording view and capture it with your browser or screen recorder; there is no built-in video encoder.
+Drag the scene with the left mouse button to orbit, and use the mouse wheel to zoom; both restore manual orbit. The dock, logo, clock, Cinematic, alignment and Shortcuts buttons provide the corresponding actions above.
 
-The HUD reports mass, Schwarzschild radius, observer distance, local proper time, probe dilation, frame rate, and current adaptive quality.
+Shortcuts work while a range slider has focus. Arrow keys, Home, End, PageUp and PageDown retain native slider behavior; Space on a focused button activates only that button. Text inputs, textareas, selects and editable text retain their keys. Pause stops disk motion, the local clock, and the probe; the camera remains available. The camera stays outside the horizon, from 1.055 to 65 Schwarzschild radii. Cinematic mode follows a slow, repeating-height orbital path. Press H for a clean recording view and capture it with your browser or screen recorder; there is no built-in video encoder.
+
+The help dialog lists every shortcut; the one-line reminder shows C, F, P, Space and R. While help is open, other shortcuts and camera keys are ignored. Escape closes the dialog natively without changing camera mode; `/` also closes it.
+
+The HUD reports mass, Schwarzschild radius, observer distance, local proper time, probe dilation, frame rate, and quality mode and scale. At widths of 760 px or less the panel starts closed and its toggle opens it. Above 760 px the panel is always visible. Crossing that breakpoint restores the new layout's default state.
 
 ### Parameters and presets
 
@@ -85,7 +91,7 @@ The HUD reports mass, Schwarzschild radius, observer distance, local proper time
 | Sagittarius A* | 4,300,000 | 0.55 | 11,000 K | 18° | 1.15× | 0.8× |
 | Quiet | 10 | 0.08 | 3,500 K | 4° | 0.85× | 0.25× |
 
-The presets are visual studies, not measured accretion-disk reconstructions. Selecting one restores its settings and camera position. Editing a slider clears the active preset selection.
+The presets are visual studies, not measured accretion-disk reconstructions. Selecting one restores its settings and camera position. Parameters that differ from the selected preset clear its pressed state and show “Custom parameters” while retaining its name. Returning all parameters to that preset restores its description and pressed state.
 
 ## Physics and rendering
 
@@ -157,14 +163,18 @@ It stretches along its radial direction and fades toward red as its displayed di
 
 Three.js bloom spreads bright emission. A final pass applies an ACES-style tone curve, display gamma, vignette, and subtle procedural film grain. All intermediate images are generated render targets.
 
-The target is 60 fps on a hardware-accelerated desktop browser. Render resolution is capped independently of display DPI. Sustained frame rates below **50 fps** reduce render scale and ray budgets; 12 seconds at 58 fps or above allow recovery. Quality uses 88, 72, or 56 integration steps, with a scale floor of 40%, and hysteresis avoids repeated switching at a threshold. Distant sky rays use a smoothly blended weak-deflection approximation. The HUD reports the active mode.
+The target is 60 fps on a hardware-accelerated desktop browser. Render resolution is capped independently of display DPI. **Auto** quality starts at 100% scale. Three seconds of measured rates below 50 fps trigger a 12 percentage point reduction. If throughput does not improve by at least 12% during the following measurement, a second reduction is tried where the 40% floor allows it: vsync can hide the first gain. If the available trials do not improve throughput, the pre-probe scale is restored and the observed rate is remembered as a frame cap. Further reductions target 85% of that cap; a rate more than 20% above it clears the cap. Twelve seconds at 58 fps (or 97% of a known cap) allow recovery; a failed upward trial waits 60 seconds before another attempt. Long frame gaps reset the measurement without changing quality.
+
+The **Quality** control also offers fixed **High** (100%), **Balanced** (76%) and **Performance** (52%) modes, which disable adaptation. High uses 88 integration steps, Balanced 72, and Performance 56. Auto uses those same budgets at scales of at least 90%, at least 60%, and below 60%, respectively, with a floor of 40%. Returning to Auto starts again at 100%. The status bar reads, for example, `AUTO · HIGH · 100%` or `FIXED · BALANCED · 76%`. Distant sky rays use a smoothly blended weak-deflection approximation.
 
 Actual performance depends on GPU, resolution, driver, browser, and other workloads. The quality floor preserves a useful image but cannot guarantee 60 fps on every machine; software WebGL renderers can be substantially slower. Reducing the browser window size can help when recording on a limited GPU.
 
 ## Code and checks
 
 ```text
-src/main.js                 Application loop, actions, telemetry, adaptive quality
+src/main.js                 Application loop, actions, telemetry, quality application
+src/quality.js              Pure adaptive controller and fixed quality modes
+src/shortcuts.js            Shared shortcut table and keyboard focus policy
 src/scene.js                Three.js render pipeline, uniforms, bloom, resolution
 src/shaders/blackhole.js    Ray integration, disk, stars, galaxy, probe
 src/shaders/post.js         Tone mapping and film grain
@@ -176,11 +186,17 @@ build/standalone.js         Single-file HTML build and source-entry conversion
 tests/physics.test.js       Units, limiting cases, Doppler shifts, probe behavior
 tests/presets.test.js       Complete, bounded, immutable preset configurations
 tests/standalone.test.js    Actual build portability and classic-script regression
+tests/quality.test.js       Simulated caps, GPU limits, hitches, suspension, fixed modes
+tests/shortcuts.test.js     Keyboard focus policy and README shortcut consistency
+tests/run.mjs               Named in-process Node test runner
+tests/browser/run.mjs       Standalone Chromium interaction checks
 ```
 
-`npm test` runs physics, preset, and standalone-build tests with Node's built-in test runner, using `--test-isolation=none` so the full suite also executes in the managed cloud runtime. Tests cover the known solar Schwarzschild radius, scale invariance, horizon/infinity time-dilation limits, approaching/receding/transverse Doppler shifts, invalid inputs, probe descent and pause behavior, and preset completeness and immutability. The build regression compiles the actual application into a temporary directory and checks that only one HTML file remains, with embedded styles and JavaScript that parses as a classic script. GLSL compilation still requires a WebGL-capable browser.
+`npm test` runs every `tests/*.test.js` through `node tests/run.mjs`, using Node's programmatic test API in one process. It prints `TOTAL <n> pass <p> fail <f>` and fails if any test fails or none run. Tests cover physics, presets, shortcut policy and documentation, and at least 120 simulated seconds per quality device scenario, without wall-clock performance thresholds. The build regression compiles the actual application under `tmp/` and checks that only one HTML file remains, with embedded styles and JavaScript that parses as a classic script.
 
-For a manual rendering check, confirm a luminous disk and dark shadow, orbit to reveal the secondary disk image, compare the bright and dim sides, switch all presets, release a probe, and try fly-in and cinematic modes. Monitor the console for shader errors and the HUD for frame rate. `window.eventHorizon.getState()` exposes a copy of the current simulation telemetry for browser automation without allowing direct mutation.
+`npm run test:browser` builds a standalone file under `tmp/`, serves it on an ephemeral localhost port and runs all modules in `tests/browser/checks/` with the installed Playwright Chromium. No browser downloads are performed. It checks responsive controls, keyboard focus behavior, custom parameters, complete help, fixed quality modes, console errors and foreign requests. Failed checks save screenshots in `tests/browser/out/`; review screenshots at 375 px and the quality panel on a real GPU for visual acceptance.
+
+For a manual rendering check, confirm a luminous disk and dark shadow, orbit to reveal the secondary disk image, compare the bright and dim sides, switch all presets, release a probe, and try fly-in and cinematic modes. Monitor the console for shader errors and the HUD for frame rate. `window.eventHorizon.getState()` exposes a copy of the current simulation telemetry for browser automation without allowing direct mutation, including `qualityMode` (`auto`, `high`, `balanced`, `performance`) and `frameCap` (fps or `null`).
 
 ### Validation in the cloud environment
 

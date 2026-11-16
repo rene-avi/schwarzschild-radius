@@ -3,6 +3,8 @@ import { BlackHoleScene } from './scene.js';
 import { ObservatoryCamera } from './camera.js';
 import { PRESETS, schwarzschildRadius, timeDilation, createProbe, updateProbe } from './physics.js';
 import { createUI } from './ui.js';
+import { QualityController } from './quality.js';
+import { allowsShortcut, shortcutForCode, shortcutNotice } from './shortcuts.js';
 
 const canvas = document.querySelector('#universe');
 const settings = { ...PRESETS.gargantua };
@@ -14,11 +16,8 @@ let scene;
 let ui;
 let frameId;
 let previousTime = null;
-let fpsElapsed = 0;
-let fpsFrames = 0;
 let fps = 60;
-let slowSeconds = 0;
-let fastSeconds = 0;
+const qualityController = new QualityController();
 let contextLost = false;
 const events = new AbortController();
 const eventOptions = { signal: events.signal };
@@ -52,7 +51,7 @@ function action(type) {
       break;
     case 'pause': paused = !paused; break;
     case 'help':
-      ui.setNotice('Drag to orbit · Scroll to zoom · F fly · P probe · C cinema · Space pause · R reset · H hide HUD');
+      ui.setNotice(ui.toggleHelp() ? shortcutNotice() : '');
       break;
     case 'hud': document.body.classList.toggle('hud-hidden'); break;
   }
@@ -70,8 +69,13 @@ ui = createUI({
     ui.setNotice(`${settings.name.toUpperCase()} · Observation parameters loaded`);
   },
   onChange(key, value) { if (key in settings && Number.isFinite(value)) settings[key] = value; },
+  onQuality(mode) { applyQuality(qualityController.setMode(mode)); },
   onAction: action,
 });
+
+function applyQuality(decision) {
+  if (decision && scene) scene.setScale(decision.scale);
+}
 
 function showFailure(message) {
   cancelAnimationFrame(frameId);
@@ -94,15 +98,13 @@ try {
 
 window.addEventListener('resize', () => scene?.resize(), eventOptions);
 window.addEventListener('keydown', (event) => {
-  if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
-  if (event.target.tagName === 'BUTTON' && event.code === 'Space') return;
-  const shortcuts = { KeyP: 'probe', KeyC: 'cinematic', KeyF: 'fly', KeyR: 'reset', KeyE: 'align', KeyH: 'hud', Space: 'pause', Escape: 'orbit', Slash: 'help' };
-  const command = shortcuts[event.code];
-  if (command && !event.repeat) { event.preventDefault(); action(command); }
+  if (!allowsShortcut(event)) return;
+  const shortcut = shortcutForCode(event.code);
+  if (shortcut && !shortcut.camera && !event.repeat) { event.preventDefault(); action(shortcut.action); }
 }, eventOptions);
 document.addEventListener('visibilitychange', () => {
   previousTime = null;
-  fpsElapsed = fpsFrames = slowSeconds = fastSeconds = 0;
+  qualityController.resetTiming();
 }, eventOptions);
 canvas.addEventListener('webglcontextlost', (event) => {
   event.preventDefault();
@@ -126,22 +128,9 @@ function animate(now) {
   clock += simDt * dilation;
   if (probe) updateProbe(probe, paused ? 0 : dt, settings.timeScale);
 
-  fpsElapsed += rawDt;
-  fpsFrames += 1;
-  if (fpsElapsed >= 0.75) {
-    fps = Math.round(fpsFrames / fpsElapsed);
-    slowSeconds = fps < 50 ? slowSeconds + fpsElapsed : 0;
-    fastSeconds = fps >= 58 ? fastSeconds + fpsElapsed : 0;
-    // Hysteresis avoids oscillating resolution on borderline graphics hardware.
-    if (slowSeconds >= 1.5) {
-      scene.adjustQuality(-1);
-      slowSeconds = fastSeconds = 0;
-    } else if (fastSeconds >= 12 && scene.scale < 1) {
-      scene.adjustQuality(1);
-      slowSeconds = fastSeconds = 0;
-    }
-    fpsElapsed = fpsFrames = 0;
-  }
+  const qualityDecision = qualityController.feed(rawDt);
+  fps = qualityController.fps;
+  applyQuality(qualityDecision);
   try {
     scene.render(camera, settings, simulationTime, probe);
   } catch (error) {
@@ -152,7 +141,7 @@ function animate(now) {
   }
   window.eventHorizonBoot?.ready();
   ui.update({
-    fps, quality: scene.quality, mass: settings.mass,
+    fps, quality: scene.quality, qualityMode: qualityController.qualityMode, mass: settings.mass,
     radius: schwarzschildRadius(settings.mass), dilation, clock,
     probeDilation: probe?.dilation ?? 1, probeState: probe?.state ?? 'idle',
     cameraDistance: camera.radius, paused,
@@ -163,7 +152,7 @@ function animate(now) {
 // Read-only observatory telemetry, useful for automated browser validation.
 Object.defineProperty(window, 'eventHorizon', {
   configurable: true,
-  value: Object.freeze({ getState: () => ({ settings: { ...settings }, camera: { mode: camera.mode, radius: camera.radius, dilation: timeDilation(camera.radius) }, probe: probe ? { ...probe } : null, paused, clock, fps, quality: scene?.quality, renderScale: scene?.scale }) }),
+  value: Object.freeze({ getState: () => ({ settings: { ...settings }, camera: { mode: camera.mode, radius: camera.radius, dilation: timeDilation(camera.radius) }, probe: probe ? { ...probe } : null, paused, clock, fps, quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),
 });
 
 if (scene) frameId = requestAnimationFrame(animate);

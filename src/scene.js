@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { vertexShader, fragmentShader } from './shaders/blackhole.js';
 import { filmShader } from './shaders/post.js';
+import { qualityForScale } from './quality.js';
 
 export class BlackHoleScene {
   constructor(canvas, settings) {
@@ -27,7 +28,7 @@ export class BlackHoleScene {
       uSpin: { value: settings.spin },
       uTilt: { value: settings.tilt },
       uLensing: { value: settings.lensing },
-      uQuality: { value: 2 },
+      uQuality: { value: qualityForScale(1).qualityIndex },
       uFly: { value: 0 },
       uProbePosition: { value: new THREE.Vector3(0, 0, 0) },
       uProbeRadius: { value: -1 },
@@ -44,8 +45,6 @@ export class BlackHoleScene {
     this.film = new ShaderPass(filmShader);
     this.composer.addPass(this.film);
     this.scale = 1;
-    this.qualityIndex = 2;
-    this.qualityNames = ['PERFORMANCE', 'BALANCED', 'HIGH'];
     this.resize();
   }
 
@@ -62,16 +61,16 @@ export class BlackHoleScene {
     this.uniforms.uScreenOffset.value.set(width > 1000 ? 0.065 : 0, 0);
   }
 
-  adjustQuality(direction) {
+  setScale(scale) {
+    // The controller owns scale bounds, rounding and quality thresholds.
     const oldScale = this.scale;
-    this.scale = THREE.MathUtils.clamp(this.scale + direction * 0.12, 0.4, 1);
-    this.qualityIndex = this.scale < 0.6 ? 0 : this.scale < 0.9 ? 1 : 2;
-    this.uniforms.uQuality.value = this.qualityIndex;
+    this.scale = scale;
+    this.uniforms.uQuality.value = qualityForScale(scale).qualityIndex;
     if (oldScale !== this.scale) this.resize();
     return oldScale !== this.scale;
   }
 
-  get quality() { return `${this.qualityNames[this.qualityIndex]} · ${Math.round(this.scale * 100)}%`; }
+  get quality() { return `${qualityForScale(this.scale).mode} · ${Math.round(this.scale * 100)}%`; }
 
   render(camera, settings, simulationTime, probe) {
     const u = this.uniforms;

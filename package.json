@@ -4,6 +4,13 @@
   "private": true,
   "type": "module",
   "description": "A procedural, relativistic black hole observatory built with Three.js.",
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rene-avi/schwarzschild-radius"
+  },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",

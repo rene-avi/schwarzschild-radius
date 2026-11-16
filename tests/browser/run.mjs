@@ -8,11 +8,24 @@ import { chromium } from 'playwright';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const outDir = join(root, 'tmp/browser-out');
+// Only rendered-pixel assertions require hardware GL.
+const gpuChecks = new Set([
+  'observer shadow measured on pixels at eight azimuths',
+  'observer photon sphere boundary is a centre line',
+  'picture round stars and retained default star brightness',
+  'picture compressed hover sky retains dense compact stars',
+  'picture luminous structured highlights in every preset and hot disk',
+  'picture top view and resolved Einstein source references',
+  'probe retarded clock signal colour visibility and loss',
+  'probe pixel pulses stretch with the received onboard clock',
+  'probe hull stays bounded from hover and up close',
+]);
 let output;
 let server;
 let browser;
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 
 try {
   await mkdir(join(root, 'tmp'), { recursive: true });
@@ -33,15 +46,39 @@ try {
     server.listen(0, '127.0.0.1', resolve);
   });
   const url = `http://127.0.0.1:${server.address().port}`;
-  browser = await chromium.launch({ headless: true, args: process.platform === 'darwin'
+  browser = await chromium.launch({ headless: true, args: process.env.EH_FORCE_SOFTWARE !== '1' && process.platform === 'darwin'
     ? ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] : [] });
+  const detector = await browser.newPage();
+  let renderer;
+  try {
+    renderer = await detector.evaluate(() => {
+      const gl = document.createElement('canvas').getContext('webgl2');
+      if (!gl) throw new Error('WebGL 2 is unavailable');
+      const info = gl.getExtension('WEBGL_debug_renderer_info');
+      if (!info) throw new Error('WEBGL_debug_renderer_info is unavailable');
+      const name = gl.getParameter(info.UNMASKED_RENDERER_WEBGL);
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+      return name;
+    });
+    assert.ok(typeof renderer === 'string' && renderer.length > 0, 'WebGL renderer name is unavailable');
+  } finally {
+    await detector.close();
+  }
+  const softwareRenderer = /swiftshader|llvmpipe/i.test(renderer);
+  console.log(`Renderer: ${renderer}`);
   const modules = (await readdir(new URL('./checks/', import.meta.url))).filter(name => name.endsWith('.mjs')).sort();
   for (const name of modules) {
     const { checks } = await import(new URL(`./checks/${name}`, import.meta.url));
-    for (const check of checks) {
+    for (const definition of checks) {
+      const check = { gpu: gpuChecks.has(definition.name), ...definition };
+      if (softwareRenderer && check.gpu) {
+        skipped++;
+        console.log(`skip ${check.name} (software renderer)`);
+        continue;
+      }
       const context = await browser.newContext({ viewport: check.viewport || { width: 1440, height: 900 }, ...check.contextOptions });
       const page = await context.newPage();
-      page.setDefaultTimeout(15000);
+      page.setDefaultTimeout(softwareRenderer ? 60000 : 15000);
       const audit = { consoleErrors: [], foreignRequests: [] };
       await page.route('**/*', route => new URL(route.request().url()).origin === url
         ? route.continue() : route.abort('blockedbyclient'));
@@ -80,5 +117,9 @@ try {
   try { if (output) await rm(output, { recursive: true, force: true }); }
   catch (error) { failed++; console.error(`FAIL build cleanup: ${error}`); }
 }
-console.log(`TOTAL ${passed + failed} pass ${passed} fail ${failed}`);
+if (passed + failed === 0) {
+  failed++;
+  console.error('FAIL no browser checks executed');
+}
+console.log(`TOTAL ${passed + failed + skipped} pass ${passed} fail ${failed} skip ${skipped}`);
 process.exitCode = failed > 0 || passed === 0 ? 1 : 0;

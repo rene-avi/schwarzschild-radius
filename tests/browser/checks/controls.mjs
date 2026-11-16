@@ -28,6 +28,43 @@ const panelOpen = async page => {
 
 export const checks = [
   {
+    name: 'S0 narrow panels stay clear of HUD and keep pause reachable',
+    viewport: { width: 375, height: 812 },
+    async run({ page }) {
+      await page.locator('.panel-toggle').click();
+      await panelOpen(page);
+      await page.locator('[data-preset="deep"]').click();
+      for (const selector of ['.control-panel', '.mission-panel']) {
+        if (selector === '.mission-panel') {
+          await page.keyboard.press('KeyM');
+          await page.keyboard.press('KeyE');
+        }
+        await page.waitForFunction(selector => {
+          const panel = document.querySelector(selector);
+          return !panel.inert && getComputedStyle(panel).opacity === '1'
+            && document.querySelector('.notice').classList.contains('visible');
+        }, selector);
+        const result = await page.evaluate(selector => {
+          const panel = document.querySelector(selector).getBoundingClientRect();
+          return {
+            noticeShowing: document.querySelector('.notice').classList.contains('visible'),
+            clockVisible: document.querySelector('.simulation-time').checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+            overlaps: ['.telemetry', '.simulation-time', '.notice'].filter(selector => {
+              const element = document.querySelector(selector);
+              if (!element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+              const box = element.getBoundingClientRect();
+              return box.left < panel.right && box.right > panel.left && box.top < panel.bottom && box.bottom > panel.top;
+            }),
+          };
+        }, selector);
+        assert.equal(result.noticeShowing, true);
+        assert.equal(result.clockVisible, true, `${selector}: observer clock remains visible`);
+        assert.deepEqual(result.overlaps, [], selector);
+        await page.locator('.pause-button').click({ trial: true });
+      }
+    },
+  },
+  {
     name: 'D1 panel follows viewport in both directions',
     viewport: { width: 375, height: 812 },
     async run({ page, outDir }) {

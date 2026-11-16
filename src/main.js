@@ -7,6 +7,7 @@ import { QualityController } from './quality.js';
 import { allowsShortcut, shortcutForCode, shortcutNotice } from './shortcuts.js';
 import { spinFromDelta } from './kerr.js';
 import { reset as resetLedger, advance as advanceLedger, travel as travelLedger } from './ledger.js';
+import { crewStep } from './mission.js';
 
 const canvas = document.querySelector('#universe');
 const settings = { ...PRESETS.gargantua };
@@ -15,6 +16,7 @@ function refreshVisualSpin() {
 }
 refreshVisualSpin();
 let ledger = resetLedger();
+let missionRunning = false;
 let paused = false;
 let probe = null;
 let simulationTime = 0;
@@ -71,6 +73,12 @@ function action(type) {
       ui.setNotice('OBSERVATION POINT RESTORED');
       break;
     case 'pause': paused = !paused; break;
+    case 'mission': ui.toggleMission(); break;
+    case 'mission-start': missionRunning = !missionRunning; break;
+    case 'mission-reset':
+      ledger = resetLedger();
+      missionRunning = false;
+      break;
     case 'help':
       ui.setNotice(ui.toggleHelp() ? shortcutNotice() : '');
       break;
@@ -99,6 +107,7 @@ ui = createUI({
     if (key === 'tilt' || key === 'spinDelta') camera.setDisk(settings.tilt, settings.spin);
   },
   onQuality(mode) { applyQuality(qualityController.setMode(mode)); },
+  onTravel(location) { ledger = travelLedger(ledger, location); },
   onAction: action,
 });
 
@@ -166,6 +175,8 @@ function animate(now) {
   }
   simulationTime += simDt;
   clock += simDt * dilation;
+  const crewSeconds = crewStep(dt, settings.timeScale, missionRunning, paused);
+  if (crewSeconds > 0) ledger = advanceLedger(ledger, crewSeconds, settings.spinDelta);
   if (probe) updateProbe(probe, paused ? 0 : dt, settings.timeScale);
 
   const qualityDecision = qualityController.feed(rawDt);
@@ -187,6 +198,7 @@ function animate(now) {
     probe, probeState: probe?.state ?? 'idle',
     cameraDistance: camera.radius, shadowFraction: camera.shadowFraction, paused,
     cinematic: camera.mode === 'cinematic', fly: camera.mode === 'fly',
+    ledger, spinDelta: settings.spinDelta, missionRunning,
   });
 }
 
@@ -214,7 +226,8 @@ Object.defineProperty(window, 'eventHorizon', {
   }, ledger: {
     location: ledger.location, homeSeconds: ledger.homeSeconds, crewSeconds: ledger.crewSeconds,
     bodySeconds: { ...ledger.bodySeconds },
-  }, probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })) } : null, paused, clock, fps, renderedFrames,
+  }, mission: { open: ui.missionOpen, running: missionRunning },
+  probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })) } : null, paused, clock, fps, renderedFrames,
   exposure: scene?.meter.exposure,
   quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),
 });

@@ -1,5 +1,7 @@
 import { SHORTCUTS } from './shortcuts.js';
 import { spinFromDelta } from './kerr.js';
+import { worlds } from './worlds.js';
+import { formatDuration, formatFactor } from './ledger.js';
 
 const icons = {
   orbit: '<ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(-35 12 12)"/><circle cx="12" cy="12" r="3"/>',
@@ -11,6 +13,7 @@ const icons = {
   play: '<path d="m8 4 12 8-12 8V4Z"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3v.1"/>',
   sliders: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="16" cy="17" r="2"/>',
+  mission: '<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2M3 12h2m14 0h2"/>',
 };
 
 function icon(name) {
@@ -51,9 +54,12 @@ const controls = [
 ];
 
 /** DOM-only HUD. All simulation state is passed in and all input goes through callbacks. */
-export function createUI({ presets, initialPreset = 'gargantua', onPreset = () => {}, onChange = () => {}, onQuality = () => {}, onAction = () => {} }) {
+export function createUI({ presets, initialPreset = 'gargantua', onPreset = () => {}, onChange = () => {}, onQuality = () => {}, onAction = () => {}, onTravel = () => {} }) {
   const hud = document.createElement('div');
   hud.id = 'hud';
+  const initialWorlds = worlds(presets[initialPreset].spinDelta);
+  const locations = ['ship', 'farShore', 'lantern', 'brink'].map(id => initialWorlds.find(body => body.id === id));
+  const ledgerRows = [['crew', 'Crew'], ['home', 'Home'], ['brink', 'Brink'], ['lantern', 'Lantern'], ['farShore', 'Far Shore'], ['ship', 'Ship']];
   hud.innerHTML = `
     <header class="topbar">
       <a class="brand" href="#" aria-label="Event Horizon — reset view">
@@ -85,6 +91,14 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
       <button class="alignment-button" data-action="align"><span>Align a background star</span><kbd>E</kbd></button>
     </aside>
 
+    <aside class="mission-panel" aria-label="Mission" inert>
+      <div class="panel-heading"><span class="eyebrow">MISSION</span><span class="panel-number">02 / CLOCKS</span></div>
+      <div class="mission-locations" role="group" aria-label="Crew location">${locations.map(body => `<button data-location="${body.id}" aria-pressed="${body.id === 'ship'}"><span class="location-heading"><span class="location-name">${body.name}</span><span data-radius>—</span></span><span class="location-factor"><span data-factor title="Home time / local time">—</span><span data-hour-cost>—</span></span></button>`).join('')}</div>
+      <div class="eyebrow ledger-heading">TIME LEDGER</div>
+      <dl class="mission-ledger">${ledgerRows.map(([id, label]) => `<div><dt>${label}</dt><dd data-ledger="${id}">0 s</dd></div>`).join('')}</dl>
+      <div class="mission-actions"><button data-action="mission-start" aria-pressed="false">Start</button><button data-action="mission-reset">Reset ledger</button></div>
+    </aside>
+
     <section class="telemetry" aria-label="Live measurements">
       <div class="eyebrow telemetry-heading">OBSERVER TELEMETRY <span class="live-dot"></span></div>
       <div class="metric"><span class="metric-label">MASS</span><span class="metric-value"><span data-readout="mass">100.00 M</span><small>M☉</small></span></div>
@@ -109,11 +123,12 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
       <button class="dock-button" data-action="fly" data-mode="fly" aria-pressed="false">${icon('fly')}<span>Fly in</span><kbd>F</kbd></button>
       <span class="dock-divider"></span>
       <button class="dock-button probe-button" data-action="probe">${icon('probe')}<span>Drop a probe</span><kbd>P</kbd></button>
+      <button class="dock-button mission-button" data-action="mission" aria-label="Mission" aria-expanded="false">${icon('mission')}<span>Mission</span></button>
     </nav>
 
     <footer class="statusbar"><span class="interaction-hint"><span class="mouse-symbol" aria-hidden="true"></span> DRAG TO ORBIT <span class="hint-separator">·</span> SCROLL TO EXPLORE</span><span class="render-status"><span class="live-dot"></span> <span data-readout="quality">ADAPTIVE QUALITY</span></span><button class="help-button" data-action="help" aria-label="Open keyboard shortcuts">${icon('help')}<span>SHORTCUTS</span></button></footer>
     <div class="notice" role="status" aria-live="polite"></div>
-    <dialog class="help-dialog" aria-label="Keyboard shortcuts"><div class="dialog-heading"><span class="eyebrow">FLIGHT MANUAL</span><button class="close-help icon-button" aria-label="Close keyboard shortcuts">×</button></div><h2 tabindex="-1" autofocus>Explore the edge.</h2><p>Drag or use one finger to orbit; in flight, look freely. Scroll or pinch to zoom. F stops the approach; R restores the view.</p><dl>${SHORTCUTS.map(shortcut => `<div data-shortcut="${shortcut.code}"><dt>${shortcut.description}</dt><dd><kbd>${shortcut.label}</kbd></dd></div>`).join('')}</dl><p class="help-note">Spin controls disk rotation and beaming. The spacetime model remains Schwarzschild.</p></dialog>
+    <dialog class="help-dialog" aria-label="Keyboard shortcuts"><div class="dialog-heading"><span class="eyebrow">FLIGHT MANUAL</span><button class="close-help icon-button" aria-label="Close keyboard shortcuts">×</button></div><h2 tabindex="-1" autofocus>Explore the edge.</h2><p>Drag or use one finger to orbit; in flight, look freely. Scroll or pinch to zoom. F stops the approach; R restores the view.</p><dl>${SHORTCUTS.map(shortcut => `<div data-shortcut="${shortcut.code}"><dt>${shortcut.description}</dt><dd><kbd>${shortcut.label}</kbd></dd></div>`).join('')}</dl><p class="help-note">Spin sets disk rotation and beaming in the picture, which remains Schwarzschild; the Mission clocks use the Kerr metric for the selected spin.</p></dialog>
   `;
   document.body.append(hud);
   const events = new AbortController();
@@ -130,10 +145,24 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   const narrowLayout = window.matchMedia('(max-width: 760px)');
   const panel = hud.querySelector('.control-panel');
   const toggle = hud.querySelector('.panel-toggle');
+  const missionPanel = hud.querySelector('.mission-panel');
+  const missionToggle = hud.querySelector('[data-action="mission"]');
+  const missionStart = hud.querySelector('[data-action="mission-start"]');
+  const locationReadouts = Object.fromEntries([...hud.querySelectorAll('[data-location]')].map(button => [button.dataset.location, {
+    button, radius: button.querySelector('[data-radius]'), factor: button.querySelector('[data-factor]'), cost: button.querySelector('[data-hour-cost]'),
+  }]));
+  const ledgerReadouts = Object.fromEntries([...hud.querySelectorAll('[data-ledger]')].map(element => [element.dataset.ledger, element]));
+  function setMissionOpen(open) {
+    hud.classList.toggle('mission-open', open);
+    missionPanel.inert = !open;
+    missionToggle.setAttribute('aria-expanded', String(open));
+    if (open && narrowLayout.matches) setPanelClosed(true);
+  }
   function setPanelClosed(closed) {
     hud.classList.toggle('panel-closed', closed);
     panel.inert = closed;
     toggle.setAttribute('aria-expanded', String(!closed));
+    if (!closed && narrowLayout.matches) setMissionOpen(false);
   }
   const syncLayout = () => setPanelClosed(narrowLayout.matches);
   narrowLayout.addEventListener('change', syncLayout, options);
@@ -197,6 +226,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   hud.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => {
     onAction(button.dataset.action);
   }, options));
+  Object.entries(locationReadouts).forEach(([id, { button }]) => button.addEventListener('click', () => onTravel(id), options));
   hud.querySelectorAll('[data-quality]').forEach(button => button.addEventListener('click', () => {
     hud.querySelectorAll('[data-quality]').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
     onQuality(button.dataset.quality);
@@ -219,6 +249,22 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   }
 
   function update(r = {}) {
+    if (r.ledger) {
+      const setText = (element, value) => { if (element.textContent !== value) element.textContent = value; };
+      for (const body of worlds(r.spinDelta)) {
+        const readout = locationReadouts[body.id];
+        readout.button.setAttribute('aria-pressed', String(body.id === r.ledger.location));
+        setText(readout.radius, `${Number(body.radiusM.toPrecision(8))} M`);
+        setText(readout.factor, formatFactor(body.dtdtau));
+        setText(readout.cost, `1 h here = ${formatDuration(3600 * body.dtdtau)}`);
+      }
+      for (const [id, element] of Object.entries(ledgerReadouts)) {
+        const seconds = id === 'crew' ? r.ledger.crewSeconds : id === 'home' ? r.ledger.homeSeconds : r.ledger.bodySeconds[id];
+        setText(element, formatDuration(seconds));
+      }
+      setText(missionStart, r.missionRunning ? 'Stop' : 'Start');
+      missionStart.setAttribute('aria-pressed', String(r.missionRunning));
+    }
     if (Number.isFinite(r.fps)) write('fps', Math.round(r.fps).toString());
     if (r.quality !== undefined) write('quality', `${r.qualityMode === 'auto' ? 'AUTO' : 'FIXED'} · ${r.quality}`);
     if (Number.isFinite(r.mass)) write('mass', compact(r.mass));
@@ -261,6 +307,8 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
 
   setPreset(initialPreset);
   return { update, setMode, setPreset, setNotice,
+    toggleMission() { setMissionOpen(missionPanel.inert); },
+    get missionOpen() { return !missionPanel.inert; },
     toggleHelp() {
       if (dialog.open) dialog.close();
       else dialog.showModal();

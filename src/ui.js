@@ -1,3 +1,5 @@
+import { SHORTCUTS } from './shortcuts.js';
+
 const icons = {
   orbit: '<ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(-35 12 12)"/><circle cx="12" cy="12" r="3"/>',
   fly: '<path d="m12 3 8 17-8-4-8 4 8-17Z"/><path d="M12 8v8"/>',
@@ -41,7 +43,7 @@ const controls = [
 ];
 
 /** DOM-only HUD. All simulation state is passed in and all input goes through callbacks. */
-export function createUI({ presets, initialPreset = 'gargantua', onPreset = () => {}, onChange = () => {}, onAction = () => {} }) {
+export function createUI({ presets, initialPreset = 'gargantua', onPreset = () => {}, onChange = () => {}, onQuality = () => {}, onAction = () => {} }) {
   const hud = document.createElement('div');
   hud.id = 'hud';
   hud.innerHTML = `
@@ -68,6 +70,8 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
     <aside class="control-panel" aria-label="Simulation controls">
       <div class="panel-heading"><span class="eyebrow">SIMULATION</span><span class="panel-number">01 / CONTROLS</span></div>
       <div class="preset-tabs" role="group" aria-label="Black hole preset">${Object.entries(presets).map(([id, p]) => `<button data-preset="${id}" aria-pressed="${id === initialPreset}">${p.name}</button>`).join('')}</div>
+      <div class="quality-heading eyebrow">QUALITY</div>
+      <div class="preset-tabs quality-tabs" role="group" aria-label="Quality">${['auto', 'high', 'balanced', 'performance'].map(mode => `<button data-quality="${mode}" aria-pressed="${mode === 'auto'}">${mode[0].toUpperCase() + mode.slice(1)}</button>`).join('')}</div>
       <div class="parameter-list">${controls.map(c => `<div class="parameter"><div class="parameter-heading"><label for="param-${c.key}">${c.label}</label><span class="parameter-output"><output for="param-${c.key}" data-control-output="${c.key}">—</output><span class="unit">${c.unit}</span></span></div><input id="param-${c.key}" name="${c.key}" type="range" min="${c.min}" max="${c.max}" step="${c.step}" aria-label="${c.label}"></div>`).join('')}</div>
       <div class="panel-footnote"><span class="small-cross">+</span><span>Light follows the curvature of spacetime.</span></div>
       <button class="alignment-button" data-action="align"><span>Align a background star</span><kbd>E</kbd></button>
@@ -78,7 +82,16 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
       <div class="metric"><span class="metric-label">MASS</span><span class="metric-value"><span data-readout="mass">100.00 M</span><small>M☉</small></span></div>
       <div class="metric"><span class="metric-label">SCHWARZSCHILD RADIUS</span><span class="metric-value"><span data-readout="radius">295.33 M</span><small>km</small></span></div>
       <div class="metric"><span class="metric-label">OBSERVER DISTANCE</span><span class="metric-value"><span data-readout="cameraDistance">17.02</span><small>rₛ</small></span></div>
-      <div class="probe-readout"><span class="probe-status"><span class="probe-light"></span><span data-readout="probeState">PROBE STANDBY</span></span><span class="probe-factor" data-readout="probeDilation">—</span></div>
+      <div class="metric"><span class="metric-label">SHADOW</span><span class="metric-value"><span data-readout="shadowFraction">0.3</span><small>% OF SKY</small></span></div>
+      <section class="probe-readout" aria-label="Probe signal">
+        <div class="probe-status"><span class="probe-light" aria-hidden="true"></span><span data-readout="probeState">PROBE STANDBY</span><span class="probe-flashes" data-readout="probeFlashes"></span></div>
+        <dl class="probe-values" hidden>
+          <div><dt>SEEN AT</dt><dd><span data-readout="probeRadius">—</span><small>rₛ</small></dd></div>
+          <div><dt>SIGNAL</dt><dd><span data-readout="probeSignal">—</span><small>ν/ν₀</small></dd></div>
+          <div><dt>PROBE CLOCK</dt><dd><span data-readout="probeClock">—</span><small>rₛ/c</small></dd></div>
+          <div><dt>YOUR CLOCK</dt><dd><span data-readout="probeObserverClock">—</span><small>rₛ/c</small></dd></div>
+        </dl>
+      </section>
     </section>
 
     <div class="simulation-time" aria-label="Observer clock"><div class="eyebrow">LOCAL PROPER TIME <span data-readout="dilation">τ / t 0.970</span></div><div class="clock-row"><time data-readout="clock">00:00:00.00</time><button class="icon-button pause-button" data-action="pause" aria-label="Pause simulation" aria-pressed="false">${icon('pause')}</button></div></div>
@@ -92,7 +105,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
 
     <footer class="statusbar"><span class="interaction-hint"><span class="mouse-symbol" aria-hidden="true"></span> DRAG TO ORBIT <span class="hint-separator">·</span> SCROLL TO EXPLORE</span><span class="render-status"><span class="live-dot"></span> <span data-readout="quality">ADAPTIVE QUALITY</span></span><button class="help-button" data-action="help" aria-label="Open keyboard shortcuts">${icon('help')}<span>SHORTCUTS</span></button></footer>
     <div class="notice" role="status" aria-live="polite"></div>
-    <dialog class="help-dialog"><div class="dialog-heading"><span class="eyebrow">FLIGHT MANUAL</span><button class="close-help icon-button" aria-label="Close keyboard shortcuts">×</button></div><h2>Explore the edge.</h2><p>Drag to orbit. Scroll to approach. Watch local time slow as gravity grows.</p><dl><div><dt>Cinematic flight</dt><dd><kbd>C</kbd></dd></div><div><dt>Fly toward the horizon</dt><dd><kbd>F</kbd></dd></div><div><dt>Release a probe</dt><dd><kbd>P</kbd></dd></div><div><dt>Pause simulation</dt><dd><kbd>Space</kbd></dd></div><div><dt>Reset the camera</dt><dd><kbd>R</kbd></dd></div></dl><p class="help-note">Spin controls disk rotation and beaming. The spacetime model remains Schwarzschild.</p></dialog>
+    <dialog class="help-dialog" aria-label="Keyboard shortcuts"><div class="dialog-heading"><span class="eyebrow">FLIGHT MANUAL</span><button class="close-help icon-button" aria-label="Close keyboard shortcuts">×</button></div><h2 tabindex="-1" autofocus>Explore the edge.</h2><p>Drag or use one finger to orbit; in flight, look freely. Scroll or pinch to zoom. F stops the approach; R restores the view.</p><dl>${SHORTCUTS.map(shortcut => `<div data-shortcut="${shortcut.code}"><dt>${shortcut.description}</dt><dd><kbd>${shortcut.label}</kbd></dd></div>`).join('')}</dl><p class="help-note">Spin controls disk rotation and beaming. The spacetime model remains Schwarzschild.</p></dialog>
   `;
   document.body.append(hud);
   const events = new AbortController();
@@ -104,10 +117,19 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   const dialog = hud.querySelector('dialog');
   let noticeTimer;
   let lastPaused;
-  if (window.matchMedia('(max-width: 760px)').matches) {
-    hud.classList.add('panel-closed');
-    hud.querySelector('.panel-toggle').setAttribute('aria-expanded', 'false');
+  let selectedPreset = initialPreset;
+  const parameterValues = {};
+  const narrowLayout = window.matchMedia('(max-width: 760px)');
+  const panel = hud.querySelector('.control-panel');
+  const toggle = hud.querySelector('.panel-toggle');
+  function setPanelClosed(closed) {
+    hud.classList.toggle('panel-closed', closed);
+    panel.inert = closed;
+    toggle.setAttribute('aria-expanded', String(!closed));
   }
+  const syncLayout = () => setPanelClosed(narrowLayout.matches);
+  narrowLayout.addEventListener('change', syncLayout, options);
+  syncLayout();
 
   function write(name, value) {
     if (readouts[name] && readouts[name].textContent !== value) readouts[name].textContent = value;
@@ -124,16 +146,25 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   controls.forEach(c => inputs[c.key].addEventListener('input', () => {
     const value = c.to ? c.to(Number(inputs[c.key].value)) : Number(inputs[c.key].value);
     setControl(c, value);
-    presetButtons.forEach(b => b.setAttribute('aria-pressed', 'false'));
+    parameterValues[c.key] = value;
+    const custom = controls.some(control => Math.abs(parameterValues[control.key] - presets[selectedPreset][control.key]) > 1e-9 * Math.max(1, Math.abs(presets[selectedPreset][control.key])));
+    presetButtons.forEach(b => b.setAttribute('aria-pressed', String(!custom && b.dataset.preset === selectedPreset)));
+    write('object-description', custom ? 'Custom parameters' : presetDescription(selectedPreset));
     onChange(c.key, value);
   }, options));
 
   function setPreset(id, values = presets[id]) {
     presetButtons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.preset === id)));
     if (!values) return;
+    selectedPreset = id;
+    Object.assign(parameterValues, values);
     controls.forEach(c => { if (Number.isFinite(values[c.key])) setControl(c, values[c.key]); });
     write('object-name', values.name || presets[id]?.name || 'Custom singularity');
-    write('object-description', id === 'quiet' ? 'A quiet stellar remnant' : id === 'sagittarius' ? 'At the heart of the Milky Way' : 'Supermassive black hole');
+    write('object-description', presetDescription(id));
+  }
+
+  function presetDescription(id) {
+    return id === 'quiet' ? 'A quiet stellar remnant' : id === 'sagittarius' ? 'At the heart of the Milky Way' : 'Supermassive black hole';
   }
 
   presetButtons.forEach(button => button.addEventListener('click', () => {
@@ -142,15 +173,17 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   }, options));
 
   hud.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => {
-    if (button.dataset.action === 'help') dialog.showModal();
     onAction(button.dataset.action);
+  }, options));
+  hud.querySelectorAll('[data-quality]').forEach(button => button.addEventListener('click', () => {
+    hud.querySelectorAll('[data-quality]').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+    onQuality(button.dataset.quality);
   }, options));
   hud.querySelector('.brand').addEventListener('click', event => { event.preventDefault(); onAction('reset'); }, options);
   hud.querySelector('.close-help').addEventListener('click', () => dialog.close(), options);
   dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); }, options);
-  hud.querySelector('.panel-toggle').addEventListener('click', event => {
-    const closed = hud.classList.toggle('panel-closed');
-    event.currentTarget.setAttribute('aria-expanded', String(!closed));
+  toggle.addEventListener('click', () => {
+    setPanelClosed(narrowLayout.matches && !hud.classList.contains('panel-closed'));
   }, options);
 
   function setMode(mode) {
@@ -165,18 +198,26 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
 
   function update(r = {}) {
     if (Number.isFinite(r.fps)) write('fps', Math.round(r.fps).toString());
-    if (r.quality !== undefined) write('quality', `ADAPTIVE · ${typeof r.quality === 'number' ? ['LOW', 'BALANCED', 'HIGH'][Math.round(r.quality)] || `${Math.round(r.quality * 100)}%` : r.quality}`.toUpperCase());
+    if (r.quality !== undefined) write('quality', `${r.qualityMode === 'auto' ? 'AUTO' : 'FIXED'} · ${r.quality}`);
     if (Number.isFinite(r.mass)) write('mass', compact(r.mass));
     if (Number.isFinite(r.radius)) write('radius', compact(r.radius / 1000));
     if (Number.isFinite(r.cameraDistance)) write('cameraDistance', r.cameraDistance.toFixed(2));
+    if (Number.isFinite(r.shadowFraction)) write('shadowFraction', (r.shadowFraction * 100).toFixed(1));
     if (Number.isFinite(r.dilation)) write('dilation', `τ / t ${r.dilation.toFixed(3)}`);
     if (Number.isFinite(r.clock)) write('clock', clock(r.clock));
     if (r.probeState !== undefined) {
       const state = String(r.probeState).toLowerCase();
       const active = state !== 'idle' && state !== 'standby';
-      hud.classList.toggle('probe-active', active);
-      write('probeState', state === 'frozen' ? 'PROBE · AT HORIZON' : active ? 'PROBE · FALLING' : 'PROBE STANDBY');
-      write('probeDilation', active && Number.isFinite(r.probeDilation) ? `${r.probeDilation.toFixed(3)}×` : '—');
+      hud.querySelector('.probe-values').hidden = !r.probe;
+      hud.classList.toggle('probe-active', active && state !== 'lost');
+      hud.dataset.probeState = state;
+      hud.style.setProperty('--probe-pulse', active && state !== 'lost' ? r.probe.pulse : 0);
+      write('probeFlashes', active ? `FLASH ${r.probe.flashCount} of ${r.probe.flashTotal}` : '');
+      write('probeState', state === 'lost' ? 'SIGNAL LOST' : state === 'fading' ? 'SIGNAL FADING' : active ? 'PROBE · FALLING' : 'PROBE STANDBY');
+      for (const [key, value, digits] of [
+        ['probeRadius', r.probe?.radius, 3], ['probeSignal', r.probe?.signal, 3],
+        ['probeClock', r.probe?.properElapsed, 3], ['probeObserverClock', r.probe?.observerElapsed, 3],
+      ]) write(key, active && Number.isFinite(value) ? value.toFixed(digits) : '—');
     }
     if (r.paused !== undefined && r.paused !== lastPaused) {
       lastPaused = r.paused;
@@ -197,5 +238,11 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
   }
 
   setPreset(initialPreset);
-  return { update, setMode, setPreset, setNotice, destroy() { events.abort(); clearTimeout(noticeTimer); hud.remove(); } };
+  return { update, setMode, setPreset, setNotice,
+    toggleHelp() {
+      if (dialog.open) dialog.close();
+      else dialog.showModal();
+      return dialog.open;
+    },
+    destroy() { events.abort(); clearTimeout(noticeTimer); hud.remove(); } };
 }

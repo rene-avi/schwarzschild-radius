@@ -1,3 +1,4 @@
+# Requires Settings > Pages > Source: GitHub Actions; CI runs independently.
 name: Deploy Event Horizon to GitHub Pages
 
 on:
@@ -31,8 +32,6 @@ jobs:
         uses: actions/configure-pages@v5
       - name: Install dependencies
         run: npm ci
-      - name: Run tests
-        run: npm test
       - name: Build standalone site
         run: npm run build
       - name: Upload Pages artifact

@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Script } from 'node:vm';
+import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 
 test('production build is one relocatable HTML file with classic JavaScript and embedded CSS', async () => {
-  const output = await mkdtemp(join(tmpdir(), 'event-horizon-standalone-'));
+  await mkdir(new URL('../tmp/', import.meta.url), { recursive: true });
+  const output = await mkdtemp(fileURLToPath(new URL('../tmp/event-horizon-standalone-', import.meta.url)));
   try {
     await build({ logLevel: 'silent', build: { outDir: output, emptyOutDir: true } });
     assert.deepEqual(await readdir(output), ['index.html']);

@@ -3,6 +3,8 @@ import { BlackHoleScene } from './scene.js';
 import { ObservatoryCamera } from './camera.js';
 import { PRESETS, schwarzschildRadius, timeDilation, createProbe, updateProbe } from './physics.js';
 import { createUI } from './ui.js';
+import { QualityController } from './quality.js';
+import { allowsShortcut, shortcutForCode, shortcutNotice } from './shortcuts.js';
 
 const canvas = document.querySelector('#universe');
 const settings = { ...PRESETS.gargantua };
@@ -14,11 +16,10 @@ let scene;
 let ui;
 let frameId;
 let previousTime = null;
-let fpsElapsed = 0;
-let fpsFrames = 0;
 let fps = 60;
-let slowSeconds = 0;
-let fastSeconds = 0;
+let flyMilestones = new Set();
+let renderedFrames = 0;
+const qualityController = new QualityController();
 let contextLost = false;
 const events = new AbortController();
 const eventOptions = { signal: events.signal };
@@ -28,16 +29,26 @@ const camera = new ObservatoryCamera(canvas, (mode) => ui?.setMode(mode));
 function action(type) {
   switch (type) {
     case 'probe':
-      probe = createProbe();
-      ui.setNotice('PROBE 01 RELEASED · Tracking gravitational descent');
+      {
+        const tilt = settings.tilt * Math.PI / 180;
+        const normal = [0, Math.cos(tilt), -Math.sin(tilt)];
+        const radial = camera.position.clone().normalize().multiplyScalar(Math.cos(25 * Math.PI / 180));
+        radial.addScaledVector(camera.right, Math.sin(25 * Math.PI / 180));
+        const clearance = Math.max(0, 0.18 - radial.toArray().reduce((sum, v, i) => sum + v * normal[i], 0));
+        const direction = radial.toArray().map((value, i) => value + clearance * normal[i]);
+        probe = createProbe({ observerRadius: Math.max(7, camera.radius), direction });
+      }
+      ui.setNotice('Watch the beacon: one flash per second of its own time.');
       break;
     case 'cinematic':
       camera.setMode(camera.mode === 'cinematic' ? 'orbit' : 'cinematic');
       ui.setNotice(camera.mode === 'cinematic' ? 'CINEMATIC PATH · Press H to hide the HUD for recording' : 'ORBIT CONTROL RESTORED');
       break;
     case 'fly':
+      camera.setDisk(settings.tilt, settings.spin);
       camera.setMode(camera.mode === 'fly' ? 'orbit' : 'fly');
-      ui.setNotice(camera.mode === 'fly' ? 'APPROACHING HORIZON · W/S thrust · A/D steer · R to return' : 'ORBIT CONTROL RESTORED');
+      if (camera.mode === 'fly') flyMilestones = new Set();
+      ui.setNotice(camera.mode === 'fly' ? 'APPROACHING HORIZON · Drag to look · W/S thrust · A/D steer' : 'APPROACH STOPPED · R to restore the observation point');
       break;
     case 'orbit': camera.setMode('orbit'); break;
     case 'align':
@@ -48,11 +59,13 @@ function action(type) {
       camera.reset();
       probe = null;
       clock = 0;
+      simulationTime = 0;
+      flyMilestones.clear();
       ui.setNotice('OBSERVATION POINT RESTORED');
       break;
     case 'pause': paused = !paused; break;
     case 'help':
-      ui.setNotice('Drag to orbit · Scroll to zoom · F fly · P probe · C cinema · Space pause · R reset · H hide HUD');
+      ui.setNotice(ui.toggleHelp() ? shortcutNotice() : '');
       break;
     case 'hud': document.body.classList.toggle('hud-hidden'); break;
   }
@@ -64,14 +77,25 @@ ui = createUI({
   onPreset(id) {
     if (!PRESETS[id]) return;
     Object.assign(settings, PRESETS[id]);
+    camera.setLensing(settings.lensing);
+    camera.setDisk(settings.tilt, settings.spin);
     camera.reset();
     probe = null;
     ui.setPreset(id, settings);
     ui.setNotice(`${settings.name.toUpperCase()} · Observation parameters loaded`);
   },
-  onChange(key, value) { if (key in settings && Number.isFinite(value)) settings[key] = value; },
+  onChange(key, value) {
+    if (key in settings && Number.isFinite(value)) settings[key] = value;
+    if (key === 'lensing') camera.setLensing(settings.lensing);
+    if (key === 'tilt' || key === 'spin') camera.setDisk(settings.tilt, settings.spin);
+  },
+  onQuality(mode) { applyQuality(qualityController.setMode(mode)); },
   onAction: action,
 });
+
+function applyQuality(decision) {
+  if (decision && scene) scene.setScale(decision.scale);
+}
 
 function showFailure(message) {
   cancelAnimationFrame(frameId);
@@ -94,15 +118,13 @@ try {
 
 window.addEventListener('resize', () => scene?.resize(), eventOptions);
 window.addEventListener('keydown', (event) => {
-  if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
-  if (event.target.tagName === 'BUTTON' && event.code === 'Space') return;
-  const shortcuts = { KeyP: 'probe', KeyC: 'cinematic', KeyF: 'fly', KeyR: 'reset', KeyE: 'align', KeyH: 'hud', Space: 'pause', Escape: 'orbit', Slash: 'help' };
-  const command = shortcuts[event.code];
-  if (command && !event.repeat) { event.preventDefault(); action(command); }
+  if (!allowsShortcut(event)) return;
+  const shortcut = shortcutForCode(event.code);
+  if (shortcut && !shortcut.camera && !event.repeat) { event.preventDefault(); action(shortcut.action); }
 }, eventOptions);
 document.addEventListener('visibilitychange', () => {
   previousTime = null;
-  fpsElapsed = fpsFrames = slowSeconds = fastSeconds = 0;
+  qualityController.resetTiming();
 }, eventOptions);
 canvas.addEventListener('webglcontextlost', (event) => {
   event.preventDefault();
@@ -121,29 +143,28 @@ function animate(now) {
   const dt = Math.min(rawDt, 0.1);
   const simDt = paused ? 0 : dt * settings.timeScale;
   camera.update(dt);
-  const dilation = timeDilation(camera.radius);
+  const dilation = timeDilation(camera.radius, settings.lensing);
+  if (camera.mode === 'fly') {
+    for (const [id, reached, message] of [
+      ['disk', camera.radius < 2.95 - 0.35 * settings.spin, 'INSIDE THE DISK’S INNER EDGE · The shadow rises around you'],
+      ['sphere', camera.radius <= 1.5 * settings.lensing, 'PHOTON SPHERE · Half the sky is shadow · Looking along the horizon'],
+      ['hover', camera.hovering && camera.radius === camera.minimum, camera.minimum < 1.5 * settings.lensing
+        ? 'FINAL HOVER · The outside universe closes to a bright disc overhead'
+        : 'FINAL HOVER · Looking outward from the minimum observer radius'],
+    ]) {
+      if (reached && !flyMilestones.has(id)) { flyMilestones.add(id); ui.setNotice(message); }
+    }
+  }
   simulationTime += simDt;
   clock += simDt * dilation;
   if (probe) updateProbe(probe, paused ? 0 : dt, settings.timeScale);
 
-  fpsElapsed += rawDt;
-  fpsFrames += 1;
-  if (fpsElapsed >= 0.75) {
-    fps = Math.round(fpsFrames / fpsElapsed);
-    slowSeconds = fps < 50 ? slowSeconds + fpsElapsed : 0;
-    fastSeconds = fps >= 58 ? fastSeconds + fpsElapsed : 0;
-    // Hysteresis avoids oscillating resolution on borderline graphics hardware.
-    if (slowSeconds >= 1.5) {
-      scene.adjustQuality(-1);
-      slowSeconds = fastSeconds = 0;
-    } else if (fastSeconds >= 12 && scene.scale < 1) {
-      scene.adjustQuality(1);
-      slowSeconds = fastSeconds = 0;
-    }
-    fpsElapsed = fpsFrames = 0;
-  }
+  const qualityDecision = qualityController.feed(rawDt);
+  fps = qualityController.fps;
+  applyQuality(qualityDecision);
   try {
-    scene.render(camera, settings, simulationTime, probe);
+    scene.render(camera, settings, simulationTime, probe, dt);
+    renderedFrames++;
   } catch (error) {
     console.error(error);
     contextLost = true;
@@ -152,18 +173,36 @@ function animate(now) {
   }
   window.eventHorizonBoot?.ready();
   ui.update({
-    fps, quality: scene.quality, mass: settings.mass,
+    fps, quality: scene.quality, qualityMode: qualityController.qualityMode, mass: settings.mass,
     radius: schwarzschildRadius(settings.mass), dilation, clock,
-    probeDilation: probe?.dilation ?? 1, probeState: probe?.state ?? 'idle',
-    cameraDistance: camera.radius, paused,
+    probe, probeState: probe?.state ?? 'idle',
+    cameraDistance: camera.radius, shadowFraction: camera.shadowFraction, paused,
     cinematic: camera.mode === 'cinematic', fly: camera.mode === 'fly',
   });
 }
 
-// Read-only observatory telemetry, useful for automated browser validation.
+const debug = new URLSearchParams(window.location.search).get('debug') === '1' ? Object.freeze({
+  setCamera: values => camera.setCamera(values),
+  setLayers(values) {
+    const layers = scene.uniforms.uLayers.value;
+    for (const [key, component] of [['disk', 'x'], ['sky', 'y'], ['ring', 'z'], ['probe', 'w']]) {
+      if (typeof values[key] === 'boolean') layers[component] = Number(values[key]);
+    }
+  },
+  setPaused(value) { if (typeof value === 'boolean') paused = value; },
+  advanceProbe(dt) { if (probe) updateProbe(probe, dt, settings.timeScale); },
+}) : null;
+
+// Debug mutation exists only behind the explicit flag; normal telemetry is copied.
 Object.defineProperty(window, 'eventHorizon', {
   configurable: true,
-  value: Object.freeze({ getState: () => ({ settings: { ...settings }, camera: { mode: camera.mode, radius: camera.radius, dilation: timeDilation(camera.radius) }, probe: probe ? { ...probe } : null, paused, clock, fps, quality: scene?.quality, renderScale: scene?.scale }) }),
+  value: Object.freeze({ ...(debug ? { debug } : {}), getState: () => ({ settings: { ...settings }, camera: {
+    mode: camera.mode, radius: camera.radius, theta: camera.theta, elevation: camera.elevation,
+    dilation: timeDilation(camera.radius, settings.lensing), gazeYaw: camera.gazeYaw, gazePitch: camera.gazePitch,
+    shadowFraction: camera.shadowFraction,
+  }, probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })) } : null, paused, clock, fps, renderedFrames,
+  exposure: scene?.meter.exposure,
+  quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),
 });
 
 if (scene) frameId = requestAnimationFrame(animate);

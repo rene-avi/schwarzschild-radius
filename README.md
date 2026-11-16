@@ -1,6 +1,6 @@
 # Event Horizon
 
-Insired by https://www.reddit.com/r/DeepSeek/comments/1xf0vlu/deepseek_v41_flash_built_an_interstellarstyle/
+Inspired by https://www.reddit.com/r/DeepSeek/comments/1xf0vlu/deepseek_v41_flash_built_an_interstellarstyle/
 
 A real-time black hole observatory built with Three.js, GLSL, and Vite. Orbit a turbulent accretion disk, approach the horizon, or release a probe and watch its signal redshift. The stars, galaxy, disk, ship, film grain, and HUD graphics are procedural. The application loads no external images, textures, models, fonts, or services.
 

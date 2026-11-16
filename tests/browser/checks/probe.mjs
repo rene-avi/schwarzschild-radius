@@ -93,9 +93,14 @@ async function prepare(page) {
   await page.locator('[data-quality="high"]').click();
   await page.waitForFunction(() => window.eventHorizon.getState().qualityMode === 'high');
   await afterRender(page, { paused: true });
+  await page.waitForFunction(() => window.eventHorizon.getState().probe === null
+    && document.querySelector('[data-readout="probeState"]').textContent === 'PROBE STANDBY'
+    && document.querySelector('.probe-values').hidden);
+  assert.equal(await page.locator('.probe-values').isVisible(), false, 'standby has only a status line');
   await page.keyboard.press('KeyP');
   await page.waitForFunction(() => window.eventHorizon.getState().probe?.state === 'falling'
-    && document.querySelector('[data-readout="probeState"]').textContent === 'PROBE · FALLING');
+    && document.querySelector('[data-readout="probeState"]').textContent === 'PROBE · FALLING'
+    && !document.querySelector('.probe-values').hidden);
   await page.waitForFunction(() => document.querySelector('.notice').textContent
     === 'Watch the beacon: one flash per second of its own time.');
 }
@@ -139,6 +144,7 @@ export const checks = [
       await advanceTo(page, 48);
       await page.waitForFunction(() => window.eventHorizon.getState().probe.state === 'lost'
         && document.querySelector('[data-readout="probeState"]').textContent === 'SIGNAL LOST');
+      assert.equal(await page.locator('.probe-values').evaluate(el => el.hidden), false, 'lost signal retains its four values');
       const lost = await difference(page, outDir, 'probe-lost.png');
       assert.equal(lost.count, 0, 'lost probe and trail draw nothing');
       const snapshot = (await state(page)).probe;
@@ -150,6 +156,10 @@ export const checks = [
         return window.eventHorizon.getState().probe.direction[0];
       });
       assert.notEqual(copy, 999, 'telemetry does not expose mutable release direction');
+      await page.keyboard.press('KeyR');
+      await page.waitForFunction(() => window.eventHorizon.getState().probe === null
+        && document.querySelector('[data-readout="probeState"]').textContent === 'PROBE STANDBY'
+        && document.querySelector('.probe-values').hidden);
       assert.deepEqual(audit.consoleErrors, []);
     },
   },

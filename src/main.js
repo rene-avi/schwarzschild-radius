@@ -163,7 +163,7 @@ function animate(now) {
   fps = qualityController.fps;
   applyQuality(qualityDecision);
   try {
-    scene.render(camera, settings, simulationTime, probe);
+    scene.render(camera, settings, simulationTime, probe, dt);
     renderedFrames++;
   } catch (error) {
     console.error(error);
@@ -201,6 +201,7 @@ Object.defineProperty(window, 'eventHorizon', {
     dilation: timeDilation(camera.radius, settings.lensing), gazeYaw: camera.gazeYaw, gazePitch: camera.gazePitch,
     shadowFraction: camera.shadowFraction,
   }, probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })) } : null, paused, clock, fps, renderedFrames,
+  exposure: scene?.meter.exposure,
   quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),
 });
 

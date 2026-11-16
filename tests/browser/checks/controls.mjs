@@ -8,7 +8,7 @@ const renderedFrames = page => page.evaluate(() => new Promise(resolve => {
 }));
 const inputState = async page => {
   // Render diagnostics continue even while simulation and inputs are paused.
-  const { fps, renderedFrames, ...current } = await state(page);
+  const { fps, renderedFrames, exposure, ...current } = await state(page);
   return current;
 };
 const assertInputState = (actual, expected, message) => {

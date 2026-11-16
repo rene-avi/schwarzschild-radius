@@ -85,7 +85,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
       <div class="metric"><span class="metric-label">SHADOW</span><span class="metric-value"><span data-readout="shadowFraction">0.3</span><small>% OF SKY</small></span></div>
       <section class="probe-readout" aria-label="Probe signal">
         <div class="probe-status"><span class="probe-light" aria-hidden="true"></span><span data-readout="probeState">PROBE STANDBY</span><span class="probe-flashes" data-readout="probeFlashes"></span></div>
-        <dl class="probe-values">
+        <dl class="probe-values" hidden>
           <div><dt>SEEN AT</dt><dd><span data-readout="probeRadius">—</span><small>rₛ</small></dd></div>
           <div><dt>SIGNAL</dt><dd><span data-readout="probeSignal">—</span><small>ν/ν₀</small></dd></div>
           <div><dt>PROBE CLOCK</dt><dd><span data-readout="probeClock">—</span><small>rₛ/c</small></dd></div>
@@ -208,6 +208,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
     if (r.probeState !== undefined) {
       const state = String(r.probeState).toLowerCase();
       const active = state !== 'idle' && state !== 'standby';
+      hud.querySelector('.probe-values').hidden = !r.probe;
       hud.classList.toggle('probe-active', active && state !== 'lost');
       hud.dataset.probeState = state;
       hud.style.setProperty('--probe-pulse', active && state !== 'lost' ? r.probe.pulse : 0);

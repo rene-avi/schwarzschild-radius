@@ -3,8 +3,8 @@ import { GEODESIC } from './geodesic.js';
 
 export const START_PHASES = Object.freeze({ lantern: -0.9, farShore: 1.82 });
 const candidates = [
-  { id: 'lantern', radiusM: 12, radius: 0.18, tint: [1, 0.48, 0.16] },
-  { id: 'farShore', radiusM: 120, radius: 0.6, tint: [0.24, 0.64, 0.9] },
+  { id: 'lantern', radiusM: 12, radius: 0.18 },
+  { id: 'farShore', radiusM: 120, radius: 0.6 },
 ];
 const dot = (a, b) => a.reduce((sum, value, i) => sum + value * b[i], 0);
 const norm = a => Math.hypot(...a);
@@ -16,7 +16,7 @@ export function drawnWorlds(delta, lensing) {
     const { omega, dtdtau } = circularOrbit(body.radiusM, delta);
     const omegaDeviation = Math.abs(omega * body.radiusM ** 1.5 - 1);
     const clockDeviation = Math.abs(dtdtau * Math.sqrt(1 - 3 / body.radiusM) - 1);
-    return { ...body, tint: [...body.tint], omega, omegaDeviation, clockDeviation,
+    return { ...body, omega, omegaDeviation, clockDeviation,
       drawn: body.radiusM / 2 >= 3 && omegaDeviation <= 0.03 && clockDeviation <= 0.03
         && Math.abs(lensing - 1) <= 1e-9 };
   });

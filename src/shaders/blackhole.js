@@ -26,6 +26,7 @@ export const fragmentShader = /* glsl */ `
   uniform vec3 uWorldCenter[2];
   uniform float uWorldRadius[2];
   uniform vec3 uWorldTint[2];
+  uniform float uWorldLightRadius;
   uniform float uTemperature;
   uniform float uSpin;
   uniform float uTilt;
@@ -392,33 +393,57 @@ export const fragmentShader = /* glsl */ `
     return asin(z) - epsilon * first / 2.0 + 3.0 * epsilon * epsilon * second / 8.0;
   }
 
-  bool worldHit(vec3 origin, vec3 direction, float segmentLength, out float nearest, out vec3 tint) {
+  vec3 worldRadiance(int world, vec3 position, vec3 normal, vec3 direction, float footprint) {
+    float terrain = 0.65 * skyNoise(normal * 2.0 + 7.3, footprint * 2.0)
+      + 0.35 * skyNoise(normal * 4.0 - 3.1, footprint * 4.0);
+    vec3 albedo = uWorldTint[world] * mix(0.78, 1.06, terrain);
+    float lambert = max(0.0, dot(normal, -normalize(position)));
+    float radius = length(position);
+    // Soften inverse-square light to keep the distant world's day side readable.
+    float falloff = (1.0 + pow(6.0 / uWorldLightRadius, 2.0))
+      / (1.0 + pow(radius / uWorldLightRadius, 2.0));
+    float limb = pow(1.0 - max(0.0, dot(normal, -direction)), 10.0);
+    vec3 light = albedo * (0.012 + blackbody(uTemperature) * falloff * (1.25 * lambert + 0.045 * limb));
+    return light / max(1.0, max(light.r, max(light.g, light.b)) / 1.05);
+  }
+
+  bool worldHit(vec3 origin, vec3 direction, float segmentLength, bvec2 seen,
+      out float nearest, out int world, out vec4 surface) {
     nearest = segmentLength + 1.0;
-    tint = vec3(0.0);
+    world = 0;
+    surface = vec4(0.0);
     bool hit = false;
     for (int j = 0; j < 2; j++) {
       if (j >= uWorldCount) break;
+      if (seen[j]) continue;
       float radius = uWorldRadius[j];
-      if (distance(uCameraPosition, uWorldCenter[j]) <= radius) continue;
+      float cameraDistance = distance(uCameraPosition, uWorldCenter[j]);
+      if (cameraDistance <= radius) continue;
+      float pixelAngle = ${2 * Math.tan(G.halfFov)} / uResolution.y;
+      float pixel = cameraDistance * pixelAngle / sqrt(1.0 - uLensing / length(uCameraPosition));
       vec3 relative = origin - uWorldCenter[j];
+      if (length(relative) > segmentLength + radius + pixel * 0.5) continue;
       float along = dot(relative, direction);
-      float discriminant = along * along - dot(relative, relative) + radius * radius;
-      if (discriminant < 0.0) continue;
-      float entry = -along - sqrt(discriminant);
+      float perpendicular = length(relative - along * direction);
+      float coverage = 1.0 - smoothstep(radius - pixel * 0.5, radius + pixel * 0.5, perpendicular);
+      if (coverage <= 0.0) continue;
+      float entry = -along - sqrt(max(0.0, radius * radius - perpendicular * perpendicular));
       if (entry < 0.0 && dot(relative, relative) <= radius * radius) entry = 0.0;
       if (entry >= 0.0 && entry <= segmentLength && entry < nearest) {
         nearest = entry;
-        tint = uWorldTint[j];
+        world = j;
+        vec3 position = origin + direction * entry;
+        vec3 normal = normalize(position - uWorldCenter[j]);
+        surface = vec4(worldRadiance(j, position, normal, direction, pixel / radius), coverage);
         hit = true;
       }
     }
     return hit;
   }
 
-  void worldLight(vec3 tint, inout vec3 light, inout float transmittance) {
-    const float coverage = 1.0;
-    light += tint * transmittance * coverage;
-    transmittance *= 1.0 - coverage;
+  void worldLight(vec4 surface, inout vec3 light, inout float transmittance) {
+    light += surface.rgb * transmittance * surface.a;
+    transmittance *= 1.0 - surface.a;
   }
 
   bool worldNeedsIntegration(vec3 initialRay, float impact) {
@@ -461,12 +486,13 @@ export const fragmentShader = /* glsl */ `
       vec3 beacon = uLayers.w > 0.5 ? probeEmission(uCameraPosition, initialRay, probeLength) : vec3(0.0);
       if (uWorldCount > 0) {
         float hitDistance;
-        vec3 tint;
+        int world;
+        vec4 surfaceLight;
         float worldLength = mu > 0.0 ? probeLength : 1000000.0;
-        if (worldHit(uCameraPosition, initialRay, worldLength, hitDistance, tint)) {
+        if (worldHit(uCameraPosition, initialRay, worldLength, bvec2(false), hitDistance, world, surfaceLight)) {
           vec3 light = vec3(0.0);
           float transmittance = 1.0;
-          worldLight(tint, light, transmittance);
+          worldLight(surfaceLight, light, transmittance);
           gl_FragColor = vec4((light + ((captured ? vec3(0.0) : observedSky(initialRay, pixelAngle, 1.0 / lapse)) + beacon) * transmittance) * vignette, 1.0);
           return;
         }
@@ -494,6 +520,7 @@ export const fragmentShader = /* glsl */ `
     vec3 normal = vec3(0.0, cos(tilt), -sin(tilt));
     vec3 light = vec3(0.0);
     float transmittance = 1.0;
+    bvec2 worldSeen = bvec2(false);
     vec3 outgoing = initialRay;
     if (!weakShortcut) {
       vec3 coronaColor = blackbody(uTemperature * 0.8) * uDiskIntensity * 0.01;
@@ -548,14 +575,16 @@ export const fragmentShader = /* glsl */ `
         float plane0 = dot(position, normal);
         float plane1 = dot(nextPosition, normal);
         float worldDistance = segmentLength + 1.0;
-        vec3 worldTint = vec3(0.0);
+        vec4 worldSurface = vec4(0.0);
+        int worldIndex;
         bool hitWorld = false;
         bool worldFirst = false;
-        if (uWorldCount > 0 && segmentLength > 0.0) {
-          hitWorld = worldHit(position, segment / segmentLength, segmentLength, worldDistance, worldTint);
+        if (uWorldCount > 0 && transmittance > 0.0 && segmentLength > 0.0) {
+          hitWorld = worldHit(position, segment / segmentLength, segmentLength, worldSeen, worldDistance, worldIndex, worldSurface);
+          if (hitWorld) worldSeen[worldIndex] = true;
           float diskDistance = plane0 * plane1 < 0.0 ? segmentLength * plane0 / (plane0 - plane1) : segmentLength + 1.0;
           worldFirst = hitWorld && worldDistance <= diskDistance;
-          if (worldFirst) worldLight(worldTint, light, transmittance);
+          if (worldFirst) worldLight(worldSurface, light, transmittance);
         }
         if (uLayers.x > 0.5 && plane0 * plane1 < 0.0) {
           // The orbital plane fixes the crossing angle independently of radius.
@@ -576,9 +605,8 @@ export const fragmentShader = /* glsl */ `
           light += emission * transmittance;
           transmittance *= exp(-18.0 * length(emission));
         }
-        if (uWorldCount > 0 && hitWorld && !worldFirst) worldLight(worldTint, light, transmittance);
-        // An opaque hit leaves no contribution from later segments or the escape tail.
-        if (uWorldCount > 0 && hitWorld) break;
+        if (uWorldCount > 0 && hitWorld && !worldFirst) worldLight(worldSurface, light, transmittance);
+        // Continue the vacuum ray after occlusion so neighbouring sky derivatives stay valid.
         if (uLayers.w > 0.5 && uProbeRadius > 0.0 && segmentLength > 0.0) light += probeEmission(position, segment / segmentLength, segmentLength) * transmittance;
         float radius = length(position);
         if (uLayers.x > 0.5 && radius < 8.5 && abs(plane0) < 0.7) {
@@ -596,8 +624,9 @@ export const fragmentShader = /* glsl */ `
 
       if (uWorldCount > 0 && transmittance > 0.0 && !captured && v < 0.0) {
         float hitDistance;
-        vec3 tint;
-        if (worldHit(position, normalize(outgoing), 1000000.0, hitDistance, tint)) worldLight(tint, light, transmittance);
+        int world;
+        vec4 surfaceLight;
+        if (worldHit(position, normalize(outgoing), 1000000.0, worldSeen, hitDistance, world, surfaceLight)) worldLight(surfaceLight, light, transmittance);
       }
     }
 

@@ -5,6 +5,7 @@ import { GEODESIC } from '../../../src/geodesic.js';
 import { PRESETS } from '../../../src/physics.js';
 import { START_PHASES, drawnWorlds, worldPosition, directImage, screenPoint } from '../../../src/worldview.js';
 import { pixels, afterRender, settledExposure } from '../pixels.mjs';
+import { traceRay } from '../../../src/geodesic.js';
 
 const viewport = { width: 1440, height: 900 };
 const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
@@ -309,7 +310,151 @@ async function placeFarShore(page, target, radius) {
   return predicted;
 }
 
+function surfaceAtPixel(world, camera, size, x, y) {
+  const basis = cameraGeometry(camera);
+  const sx = (2 * (x + 0.5) / size.width - 1 + (size.width > 1000 ? 0.13 : 0)) * size.width / size.height;
+  const sy = 1 - 2 * (y + 0.5) / size.height;
+  const ray = unit(basis.forward.map((v, i) => v + Math.tan(GEODESIC.halfFov) * (sx * basis.right[i] + sy * basis.up[i])));
+  const mu = Math.max(-1, Math.min(1, -dot(ray, basis.radial)));
+  const tangent = unit(ray.map((v, i) => v + mu * basis.radial[i]));
+  const pixel = norm(world.center.map((v, i) => v - basis.position[i]))
+    * 2 * Math.tan(GEODESIC.halfFov) / size.height / Math.sqrt(1 - 1 / camera.radius);
+  let hit, tailStart = basis.position;
+  const intersect = (position, direction, length) => {
+    if (hit) return;
+    const relative = position.map((v, i) => v - world.center[i]), along = dot(relative, direction);
+    const perpendicular = norm(relative.map((v, i) => v - along * direction[i]));
+    if (perpendicular >= world.radius) return;
+    const entry = -along - Math.sqrt(world.radius ** 2 - perpendicular ** 2);
+    if (entry < 0 || entry > length) return;
+    const point = position.map((v, i) => v + entry * direction[i]);
+    const normal = unit(point.map((v, i) => v - world.center[i]));
+    hit = { cosine: dot(normal, unit(point).map(v => -v)), incidence: -dot(normal, direction),
+      interior: world.radius - perpendicular >= pixel * 0.5, normal };
+  };
+  const traced = traceRay({ r: camera.radius, psi: Math.acos(mu), disk: {
+    radial: basis.radial, tangent, normal: [0, 1, 0],
+    onSegment({ position, nextPosition }) {
+      const delta = nextPosition.map((v, i) => v - position[i]), length = norm(delta);
+      if (length > 0) intersect(position, delta.map(v => v / length), length);
+      tailStart = nextPosition;
+    },
+  } });
+  if (!hit && traced.escaped) {
+    const radius = norm(tailStart), radial = unit(tailStart), b = impact(ray, basis.position);
+    const orbitNormal = cross(basis.radial, tangent), tailTangent = cross(orbitNormal, radial);
+    const v = -Math.sqrt(Math.max(0, 1 / b ** 2 - (1 - 1 / radius) / radius ** 2));
+    intersect(tailStart, unit(radial.map((value, i) => -v * value + tailTangent[i] / radius)), 1e6);
+  }
+  return hit;
+}
+
+export function surfaceSamples(image, world, camera, includeLimb = false) {
+  const predicted = prediction(world, camera, image), samples = [];
+  for (const index of silhouettePixels(predicted, image.width, image.height)) {
+    const x = index % image.width, y = Math.floor(index / image.width);
+    const hit = surfaceAtPixel(world, camera, image, x, y);
+    if (hit && (includeLimb || (hit.interior && hit.incidence > 0.1))) samples.push({ x, y, ...hit, luma: image.luma(x, y) });
+  }
+  return samples;
+}
+
+function meanLuma(samples) {
+  assert.ok(samples.length > 0, 'nonempty surface sample');
+  return samples.reduce((sum, sample) => sum + sample.luma, 0) / samples.length;
+}
+
+function haloMetrics(on, off, predictions) {
+  const enlarged = scale => predictions.map(p => p.polygon.map(v => ({
+    x: p.x + scale * (v.x - p.x), y: p.y + scale * (v.y - p.y),
+  })));
+  const inner = enlarged(1.5), outer = enlarged(2.5);
+  let pixels = 0, maximum = 0;
+  for (let y = 0; y < on.height; y++) for (let x = 0; x < on.width; x++) {
+    if (inner.some(p => inPolygon(x, y, p)) || !outer.some(p => inPolygon(x, y, p))) continue;
+    pixels++;
+    const a = on.rgb(x, y), b = off.rgb(x, y);
+    maximum = Math.max(maximum, ...a.map((v, i) => Math.abs(v - b[i])));
+  }
+  return { innerRadii: 1.5, outerRadii: 2.5, pixels, maximum };
+}
+
 export const checks = [
+  {
+    name: 'spheres surface lighting visibility exposure and bloom', gpu: true, path: '/?debug=1', viewport,
+    async run({ page, outDir }) {
+      await prepare(page);
+      await afterRender(page, { layers: { worlds: false } });
+      await settledExposure(page);
+      const exposureOff = (await state(page)).exposure;
+      await afterRender(page, { layers: { worlds: true } });
+      await settledExposure(page);
+      const exposureOn = (await state(page)).exposure;
+      const result = { exposureOff, exposureOn, exposureRatio: exposureOn / exposureOff };
+      await writeFile(join(outDir, 'spheres-lighting.json'), JSON.stringify(result, null, 2));
+      assert.ok(Math.abs(result.exposureRatio - 1) <= 0.01, `world exposure ratio ${result.exposureRatio}`);
+
+      await afterRender(page, { layers: { disk: false, sky: false, ring: false } });
+      await settledExposure(page);
+      const isolated = await capture(page, outDir, 'spheres-default-surfaces');
+      const snapshot = await state(page);
+      const surfaces = snapshot.worlds.map(world => ({
+        id: world.id, samples: surfaceSamples(isolated, world, snapshot.camera),
+      }));
+      result.defaultSurfaces = surfaces;
+      const farDay = surfaces.find(w => w.id === 'farShore').samples.filter(p => p.cosine >= 0.35);
+      result.farShore = { dayPixels: farDay.length, dayMeanLuma: meanLuma(farDay) };
+      await writeFile(join(outDir, 'spheres-lighting.json'), JSON.stringify(result, null, 2));
+      // A stretched image must retain the source sphere's illumination gradient.
+      const far = surfaces[1].samples.filter(p => p.interior && p.incidence > 0.1).sort((a, b) => a.cosine - b.cosine);
+      const quarter = Math.floor(far.length / 4);
+      assert.ok(quarter > 0, 'resolved Far Shore surface');
+      result.farGradient = { low: meanLuma(far.slice(0, quarter)), high: meanLuma(far.slice(-quarter)) };
+      await writeFile(join(outDir, 'spheres-lighting.json'), JSON.stringify(result, null, 2));
+      assert.ok(result.farGradient.high >= 1.2 * result.farGradient.low, `Far Shore surface gradient ${JSON.stringify(result.farGradient)}`);
+
+      const predictions = snapshot.worlds.map(w => prediction(w, snapshot.camera));
+      await afterRender(page, { layers: { worlds: false } });
+      await settledExposure(page);
+      const dark = await capture(page, outDir, 'spheres-dark-background');
+      result.halos = [];
+      for (const temperature of [2000, 6500, 20000]) {
+        await renderedMutation(page, temperature => {
+          const slider = document.querySelector('#param-temperature');
+          slider.value = String(temperature);
+          slider.dispatchEvent(new Event('input', { bubbles: true }));
+        }, temperature);
+        await page.waitForFunction(temperature => window.eventHorizon.getState().settings.temperature === temperature, temperature);
+        await afterRender(page, { layers: { worlds: true } });
+        await settledExposure(page);
+        const frame = await capture(page, outDir, `spheres-no-halo-${temperature}`);
+        const measured = { temperature, ...haloMetrics(frame, dark, predictions) };
+        result.halos.push(measured);
+        await writeFile(join(outDir, 'spheres-lighting.json'), JSON.stringify(result, null, 2));
+        assert.ok(measured.pixels > 100, 'nonempty annuli beyond 1.5 world radii');
+        assert.ok(measured.maximum <= 1, `world bloom halo at ${temperature} K: ${measured.maximum}`);
+      }
+
+      await renderedMutation(page, () => {
+        const slider = document.querySelector('#param-temperature');
+        slider.value = '6500';
+        slider.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.temperature === 6500);
+      await setSeenPhase(page, 'lantern', 0);
+      await settledExposure(page);
+      const quarterLit = await capture(page, outDir, 'spheres-lantern-day-night');
+      const current = await state(page);
+      const samples = surfaceSamples(quarterLit, current.worlds.find(w => w.id === 'lantern'), current.camera);
+      const day = samples.filter(p => p.cosine >= 0.35), night = samples.filter(p => p.cosine <= -0.15);
+      result.lantern = { dayPixels: day.length, nightPixels: night.length, dayMeanLuma: meanLuma(day), nightMeanLuma: meanLuma(night) };
+      result.lantern.ratio = result.lantern.dayMeanLuma / result.lantern.nightMeanLuma;
+      result.farLitRatio = result.farShore.dayMeanLuma / result.lantern.dayMeanLuma;
+      await writeFile(join(outDir, 'spheres-lighting.json'), JSON.stringify(result, null, 2));
+      assert.ok(result.farLitRatio >= 0.35, `Far Shore / quarter-lit Lantern core luma ${result.farLitRatio}`);
+      assert.ok(result.lantern.ratio >= 2, `Lantern day/night luma ${result.lantern.ratio}`);
+    },
+  },
   {
     name: 'spheres mission gate and localized image changes', gpu: true, path: '/?debug=1', viewport,
     async run({ page, outDir }) {

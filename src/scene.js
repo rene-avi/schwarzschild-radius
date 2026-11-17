@@ -90,6 +90,7 @@ export class BlackHoleScene {
       uWorldCenter: { value: Array.from({ length: 2 }, () => new THREE.Vector3()) },
       uWorldRadius: { value: [0, 0] },
       uWorldTint: { value: Array.from({ length: 2 }, () => new THREE.Vector3()) },
+      uWorldLightRadius: { value: 60 },
       uScreenOffset: { value: new THREE.Vector2() },
       uTemperature: { value: settings.temperature },
       uSpin: { value: settings.spin },
@@ -152,7 +153,7 @@ export class BlackHoleScene {
     drawn.forEach((world, i) => {
       this.uniforms.uWorldCenter.value[i].fromArray(world.center);
       this.uniforms.uWorldRadius.value[i] = world.radius;
-      this.uniforms.uWorldTint.value[i].fromArray(world.tint);
+      this.uniforms.uWorldTint.value[i].fromArray(world.id === 'lantern' ? [0.43, 0.58, 0.78] : [0.83, 0.73, 0.50]);
     });
   }
 

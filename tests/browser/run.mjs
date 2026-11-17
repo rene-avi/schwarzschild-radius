@@ -20,6 +20,11 @@ const gpuChecks = new Set([
   'probe retarded clock signal colour visibility and loss',
   'probe pixel pulses stretch with the received onboard clock',
   'probe hull stays bounded from hover and up close',
+  'spheres mission gate and localized image changes',
+  'spheres default images clear visible panels',
+  'spheres direct images across weak field boundary',
+  'spheres disk crossing order retains foreground light',
+  'spheres reference lensing gate',
 ]);
 let output;
 let server;

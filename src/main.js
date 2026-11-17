@@ -8,6 +8,7 @@ import { allowsShortcut, shortcutForCode, shortcutNotice } from './shortcuts.js'
 import { spinFromDelta } from './kerr.js';
 import { reset as resetLedger, advance as advanceLedger, travel as travelLedger } from './ledger.js';
 import { crewStep } from './mission.js';
+import { START_PHASES, advancePhases, drawnWorlds, retardedPosition } from './worldview.js';
 
 const canvas = document.querySelector('#universe');
 const settings = { ...PRESETS.gargantua };
@@ -20,6 +21,9 @@ let missionRunning = false;
 let paused = false;
 let probe = null;
 let simulationTime = 0;
+let worldPhases = { ...START_PHASES };
+let worldsLayer = true;
+let pictureWorlds = [];
 let clock = 0;
 let scene;
 let ui;
@@ -69,6 +73,7 @@ function action(type) {
       probe = null;
       clock = 0;
       simulationTime = 0;
+      worldPhases = { ...START_PHASES };
       flyMilestones.clear();
       ui.setNotice('OBSERVATION POINT RESTORED');
       break;
@@ -174,6 +179,12 @@ function animate(now) {
     }
   }
   simulationTime += simDt;
+  worldPhases = advancePhases(worldPhases, simDt, settings.spinDelta);
+  pictureWorlds = drawnWorlds(settings.spinDelta, settings.lensing).map(body => ({ ...body,
+    drawn: body.drawn && ui.missionOpen && worldsLayer,
+    center: retardedPosition(body, worldPhases[body.id], camera.position.toArray(), settings.tilt).center,
+  }));
+  scene?.setWorlds(pictureWorlds);
   clock += simDt * dilation;
   const crewSeconds = crewStep(dt, settings.timeScale, missionRunning, paused);
   if (crewSeconds > 0) ledger = advanceLedger(ledger, crewSeconds, settings.spinDelta);
@@ -205,12 +216,17 @@ function animate(now) {
 const debug = new URLSearchParams(window.location.search).get('debug') === '1' ? Object.freeze({
   setCamera: values => camera.setCamera(values),
   setLayers(values) {
+    if (typeof values.worlds === 'boolean') worldsLayer = values.worlds;
     const layers = scene.uniforms.uLayers.value;
     for (const [key, component] of [['disk', 'x'], ['sky', 'y'], ['ring', 'z'], ['probe', 'w']]) {
       if (typeof values[key] === 'boolean') layers[component] = Number(values[key]);
     }
   },
   setPaused(value) { if (typeof value === 'boolean') paused = value; },
+  setWorldPhases(values) {
+    for (const id of ['lantern', 'farShore']) if (Number.isFinite(values[id])) worldPhases[id] = values[id];
+  },
+  setSimulationTime(seconds) { if (Number.isFinite(seconds)) simulationTime = seconds; },
   advanceProbe(dt) { if (probe) updateProbe(probe, dt, settings.timeScale); },
   advanceCrew(seconds) { ledger = advanceLedger(ledger, seconds, settings.spinDelta); },
   travel(location) { ledger = travelLedger(ledger, location); },
@@ -227,7 +243,8 @@ Object.defineProperty(window, 'eventHorizon', {
     location: ledger.location, homeSeconds: ledger.homeSeconds, crewSeconds: ledger.crewSeconds,
     bodySeconds: { ...ledger.bodySeconds },
   }, mission: { open: ui.missionOpen, running: missionRunning },
-  probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })) } : null, paused, clock, fps, renderedFrames,
+  worlds: pictureWorlds.map(({ id, drawn, center, radius }) => ({ id, drawn, center: [...center], radius })),
+  probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })) } : null, paused, clock, simulationTime, fps, renderedFrames,
   exposure: scene?.meter.exposure,
   quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),
 });

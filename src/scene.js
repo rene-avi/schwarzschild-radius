@@ -86,6 +86,10 @@ export class BlackHoleScene {
       uCameraRight: { value: new THREE.Vector3() },
       uCameraUp: { value: new THREE.Vector3() },
       uLayers: { value: new THREE.Vector4(1, 1, 1, 1) },
+      uWorldCount: { value: 0 },
+      uWorldCenter: { value: Array.from({ length: 2 }, () => new THREE.Vector3()) },
+      uWorldRadius: { value: [0, 0] },
+      uWorldTint: { value: Array.from({ length: 2 }, () => new THREE.Vector3()) },
       uScreenOffset: { value: new THREE.Vector2() },
       uTemperature: { value: settings.temperature },
       uSpin: { value: settings.spin },
@@ -141,6 +145,16 @@ export class BlackHoleScene {
   }
 
   get quality() { return `${qualityForScale(this.scale).mode} · ${Math.round(this.scale * 100)}%`; }
+
+  setWorlds(worlds) {
+    const drawn = worlds.filter(world => world.drawn);
+    this.uniforms.uWorldCount.value = drawn.length;
+    drawn.forEach((world, i) => {
+      this.uniforms.uWorldCenter.value[i].fromArray(world.center);
+      this.uniforms.uWorldRadius.value[i] = world.radius;
+      this.uniforms.uWorldTint.value[i].fromArray(world.tint);
+    });
+  }
 
   render(camera, settings, simulationTime, probe, dt) {
     const u = this.uniforms;

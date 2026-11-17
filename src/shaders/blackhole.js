@@ -22,6 +22,10 @@ export const fragmentShader = /* glsl */ `
   uniform vec3 uCameraRight;
   uniform vec3 uCameraUp;
   uniform vec4 uLayers;
+  uniform int uWorldCount;
+  uniform vec3 uWorldCenter[2];
+  uniform float uWorldRadius[2];
+  uniform vec3 uWorldTint[2];
   uniform float uTemperature;
   uniform float uSpin;
   uniform float uTilt;
@@ -146,9 +150,8 @@ export const fragmentShader = /* glsl */ `
     return stars * stable;
   }
 
-  vec3 skyColor(vec3 ray, float pixelAngle) {
-    ray = normalize(ray);
-    vec3 dx = dFdx(ray), dy = dFdy(ray);
+  // ray is normalized; its derivatives come from uniform control flow.
+  vec3 skyColor(vec3 ray, vec3 dx, vec3 dy, float pixelAngle) {
     vec3 galaxyNormal = normalize(vec3(-0.32, 0.80, 0.31));
     float latitude = abs(dot(ray, galaxyNormal));
     // The Jacobian's Frobenius norm bounds both axes and is rotation invariant.
@@ -365,12 +368,17 @@ export const fragmentShader = /* glsl */ `
     return light / max(1.0, max(light.r, max(light.g, light.b)) / 1.05);
   }
 
-  vec3 observedSky(vec3 ray, float pixelAngle, float observerShift) {
+  vec3 observedSky(vec3 ray, vec3 dx, vec3 dy, float pixelAngle, float observerShift) {
     if (uLayers.y < 0.5) return vec3(0.0);
     float gain = min(pow(observerShift, 0.75), 2.8);
     vec3 tint = mix(vec3(1.0), vec3(0.85, 0.96, 1.15), clamp((observerShift - 1.0) * 0.2, 0.0, 1.0));
-    vec3 sky = skyColor(ray, pixelAngle);
+    vec3 sky = skyColor(ray, dx, dy, pixelAngle);
     return min(sky * gain * tint, max(sky, vec3(1.8, 2.2, 2.8))) * uLayers.y;
+  }
+
+  vec3 observedSky(vec3 ray, float pixelAngle, float observerShift) {
+    ray = normalize(ray);
+    return observedSky(ray, dFdx(ray), dFdy(ray), pixelAngle, observerShift);
   }
 
   // Vacuum remainder to infinity; the cutoff guarantees b/r <= 1/2.
@@ -382,6 +390,47 @@ export const fragmentShader = /* glsl */ `
     float second = z * z2 * z2 * z2 * (1.0 / 7.0 + z2 * (5.0 / 18.0 + z2 * (35.0 / 88.0 + z2 * (105.0 / 208.0 + z2 * 77.0 / 128.0))));
     float epsilon = uLensing / b;
     return asin(z) - epsilon * first / 2.0 + 3.0 * epsilon * epsilon * second / 8.0;
+  }
+
+  bool worldHit(vec3 origin, vec3 direction, float segmentLength, out float nearest, out vec3 tint) {
+    nearest = segmentLength + 1.0;
+    tint = vec3(0.0);
+    bool hit = false;
+    for (int j = 0; j < 2; j++) {
+      if (j >= uWorldCount) break;
+      float radius = uWorldRadius[j];
+      if (distance(uCameraPosition, uWorldCenter[j]) <= radius) continue;
+      vec3 relative = origin - uWorldCenter[j];
+      float along = dot(relative, direction);
+      float discriminant = along * along - dot(relative, relative) + radius * radius;
+      if (discriminant < 0.0) continue;
+      float entry = -along - sqrt(discriminant);
+      if (entry < 0.0 && dot(relative, relative) <= radius * radius) entry = 0.0;
+      if (entry >= 0.0 && entry <= segmentLength && entry < nearest) {
+        nearest = entry;
+        tint = uWorldTint[j];
+        hit = true;
+      }
+    }
+    return hit;
+  }
+
+  void worldLight(vec3 tint, inout vec3 light, inout float transmittance) {
+    const float coverage = 1.0;
+    light += tint * transmittance * coverage;
+    transmittance *= 1.0 - coverage;
+  }
+
+  bool worldNeedsIntegration(vec3 initialRay, float impact) {
+    for (int j = 0; j < 2; j++) {
+      if (j >= uWorldCount) break;
+      vec3 relative = uWorldCenter[j] - uCameraPosition;
+      float d = length(relative);
+      if (d <= uWorldRadius[j]) continue;
+      float cone = asin(uWorldRadius[j] / d) + 2.5 / impact + 0.02;
+      if (dot(initialRay, relative / d) >= cos(min(PI, cone))) return true;
+    }
+    return false;
   }
 
   void main() {
@@ -410,6 +459,18 @@ export const fragmentShader = /* glsl */ `
     if (sinPsi < ${G.radialEpsilon.toFixed(6)}) {
       float probeLength = mu > 0.0 ? max(0.0, observerRadius - surface) : observerRadius + 8.0;
       vec3 beacon = uLayers.w > 0.5 ? probeEmission(uCameraPosition, initialRay, probeLength) : vec3(0.0);
+      if (uWorldCount > 0) {
+        float hitDistance;
+        vec3 tint;
+        float worldLength = mu > 0.0 ? probeLength : 1000000.0;
+        if (worldHit(uCameraPosition, initialRay, worldLength, hitDistance, tint)) {
+          vec3 light = vec3(0.0);
+          float transmittance = 1.0;
+          worldLight(tint, light, transmittance);
+          gl_FragColor = vec4((light + ((captured ? vec3(0.0) : observedSky(initialRay, pixelAngle, 1.0 / lapse)) + beacon) * transmittance) * vignette, 1.0);
+          return;
+        }
+      }
       gl_FragColor = vec4((captured ? vec3(0.0) : observedSky(initialRay, pixelAngle, 1.0 / lapse)) * vignette + beacon * vignette, 1.0);
       return;
     }
@@ -422,104 +483,137 @@ export const fragmentShader = /* glsl */ `
     float deflection = finiteDistance * uLensing / impact
       + (15.0 * PI / 32.0) * finiteDistance * uLensing * uLensing / (impact * impact);
     vec3 weakRay = normalize(coordinateRay * cos(deflection) - impactDirection * sin(deflection));
-    if (impact >= ${G.weakEnd.toFixed(1)}) {
-      gl_FragColor = vec4(observedSky(weakRay, pixelAngle, 1.0 / lapse) * vignette, 1.0);
-      return;
-    }
+    // Both gates use the same normalized ray and footprint before any cone split.
+    vec3 weakSkyRay = normalize(weakRay);
+    vec3 weakSkyDx = dFdx(weakSkyRay), weakSkyDy = dFdy(weakSkyRay);
+    bool integrateWorld = false;
+    if (uWorldCount > 0 && impact >= ${G.weakEnd.toFixed(1)}) integrateWorld = worldNeedsIntegration(initialRay, impact);
+    bool weakShortcut = impact >= ${G.weakEnd.toFixed(1)} && !integrateWorld;
 
     float tilt = uTilt * PI / 180.0;
     vec3 normal = vec3(0.0, cos(tilt), -sin(tilt));
     vec3 light = vec3(0.0);
     float transmittance = 1.0;
-    vec3 coronaColor = blackbody(uTemperature * 0.8) * uDiskIntensity * 0.01;
-    int limit = uQuality < 0.5 ? ${G.performanceSteps} : (uQuality < 1.5 ? ${G.balancedSteps} : ${G.highSteps});
-    float maxAngle = uQuality < 0.5 ? ${G.performanceAngle} : (uQuality < 1.5 ? ${G.balancedAngle} : ${G.highAngle});
-    float criticalAngle = uQuality < 0.5 ? ${G.performanceCriticalAngle} : (uQuality < 1.5 ? ${G.balancedCriticalAngle} : ${G.highCriticalAngle});
-    float criticalDistance = min(1.0, ${G.criticalImpactScale.toFixed(1)} * abs(impact / critical - 1.0));
-    float escapeU = 1.0 / max(${G.escapeRadius.toFixed(1)}, ${G.escapeImpact.toFixed(1)} * impact);
-    float u = 1.0 / observerRadius;
-    float v = mu / impact;
-    vec3 orbitRadial = radial;
-    vec3 orbitTangent = tangent;
-    vec3 position = uCameraPosition;
     vec3 outgoing = initialRay;
+    if (!weakShortcut) {
+      vec3 coronaColor = blackbody(uTemperature * 0.8) * uDiskIntensity * 0.01;
+      int limit = uQuality < 0.5 ? ${G.performanceSteps} : (uQuality < 1.5 ? ${G.balancedSteps} : ${G.highSteps});
+      float maxAngle = uQuality < 0.5 ? ${G.performanceAngle} : (uQuality < 1.5 ? ${G.balancedAngle} : ${G.highAngle});
+      float criticalAngle = uQuality < 0.5 ? ${G.performanceCriticalAngle} : (uQuality < 1.5 ? ${G.balancedCriticalAngle} : ${G.highCriticalAngle});
+      float criticalDistance = min(1.0, ${G.criticalImpactScale.toFixed(1)} * abs(impact / critical - 1.0));
+      float escapeU = 1.0 / max(${G.escapeRadius.toFixed(1)}, ${G.escapeImpact.toFixed(1)} * impact);
+      float u = 1.0 / observerRadius;
+      float v = mu / impact;
+      vec3 orbitRadial = radial;
+      vec3 orbitTangent = tangent;
+      vec3 position = uCameraPosition;
 
-    // RK4 solves u'' + u = 1.5 L u^2; the reference uses identical stages and step rules.
-    for (int i = 0; i < ${G.highSteps}; i++) {
-      if (i >= limit || u >= 1.0 / surface) break;
-      if (v < 0.0 && u < escapeU) {
-        float tail = escapeAngle(u, impact);
-        outgoing = orbitRadial * cos(tail) + orbitTangent * sin(tail);
-        break;
+      // RK4 solves u'' + u = 1.5 L u^2; the reference uses identical stages and step rules.
+      for (int i = 0; i < ${G.highSteps}; i++) {
+        if (i >= limit || u >= 1.0 / surface) break;
+        if (v < 0.0 && u < escapeU) {
+          float tail = escapeAngle(u, impact);
+          outgoing = orbitRadial * cos(tail) + orbitTangent * sin(tail);
+          break;
+        }
+        float angularLimit = min(min(maxAngle, ${G.flatAngle} + uLensing), criticalAngle + ${G.criticalStep} * abs(1.0 - 1.5 * uLensing * u) * criticalDistance);
+        float h = min(angularLimit, max(${G.minimumAngle.toFixed(6)}, ${G.radialStep} * u / max(abs(v), u)));
+        float a1 = 1.5 * uLensing * u * u - u;
+        float u2 = u + v * h * 0.5;
+        float v2 = v + a1 * h * 0.5;
+        float a2 = 1.5 * uLensing * u2 * u2 - u2;
+        float u3 = u + v2 * h * 0.5;
+        float v3 = v + a2 * h * 0.5;
+        float a3 = 1.5 * uLensing * u3 * u3 - u3;
+        float u4 = u + v3 * h;
+        float v4 = v + a3 * h;
+        float a4 = 1.5 * uLensing * u4 * u4 - u4;
+        float nextU = u + h / 6.0 * (v + 2.0 * v2 + 2.0 * v3 + v4);
+        float nextV = v + h / 6.0 * (a1 + 2.0 * a2 + 2.0 * a3 + a4);
+        if (nextU <= 0.0) {
+          float tail = h * u / (u - nextU);
+          outgoing = orbitRadial * cos(tail) + orbitTangent * sin(tail);
+          break;
+        }
+        // Bounded-angle Taylor rotations avoid transcendental work in the orbit loop.
+        float h2 = h * h;
+        float s = h * (1.0 + h2 * (-1.0 / 6.0 + h2 * (1.0 / 120.0 - h2 / 5040.0)));
+        float c = 1.0 + h2 * (-1.0 / 2.0 + h2 * (1.0 / 24.0 - h2 / 720.0));
+        vec3 nextRadial = orbitRadial * c + orbitTangent * s;
+        vec3 nextTangent = -orbitRadial * s + orbitTangent * c;
+        vec3 nextPosition = nextRadial / nextU;
+        vec3 nextVelocity = normalize(-nextV * nextRadial + nextU * nextTangent);
+        vec3 segment = nextPosition - position;
+        float segmentLength = length(segment);
+        float plane0 = dot(position, normal);
+        float plane1 = dot(nextPosition, normal);
+        float worldDistance = segmentLength + 1.0;
+        vec3 worldTint = vec3(0.0);
+        bool hitWorld = false;
+        bool worldFirst = false;
+        if (uWorldCount > 0 && segmentLength > 0.0) {
+          hitWorld = worldHit(position, segment / segmentLength, segmentLength, worldDistance, worldTint);
+          float diskDistance = plane0 * plane1 < 0.0 ? segmentLength * plane0 / (plane0 - plane1) : segmentLength + 1.0;
+          worldFirst = hitWorld && worldDistance <= diskDistance;
+          if (worldFirst) worldLight(worldTint, light, transmittance);
+        }
+        if (uLayers.x > 0.5 && plane0 * plane1 < 0.0) {
+          // The orbital plane fixes the crossing angle independently of radius.
+          float planeRadial = dot(orbitRadial, normal);
+          float planeTangent = dot(orbitTangent, normal);
+          float fraction = atan(abs(planeRadial), abs(planeTangent)) / h;
+          float slope0 = h * v, slope1 = h * nextV;
+          float quadratic = 3.0 * (nextU - u) - 2.0 * slope0 - slope1;
+          float cubic = 2.0 * (u - nextU) + slope0 + slope1;
+          float crossingU = u + fraction * (slope0 + fraction * (quadratic + fraction * cubic));
+          float crossingV = (slope0 + fraction * (2.0 * quadratic + fraction * 3.0 * cubic)) / h;
+          vec3 crossingRadial = normalize(orbitRadial * abs(planeTangent) + orbitTangent * abs(planeRadial));
+          vec3 crossingTangent = normalize(-orbitRadial * abs(planeRadial) + orbitTangent * abs(planeTangent));
+          vec3 crossing = crossingRadial / crossingU;
+          vec3 crossingVelocity = normalize(-crossingV * crossingRadial + crossingU * crossingTangent);
+          float diskPixel = pixelAngle * observerRadius / lapse * (1.0 + 0.2 / max(abs(impact - critical), 0.03));
+          vec3 emission = diskEmission(crossing, crossingVelocity, normal, diskPixel);
+          light += emission * transmittance;
+          transmittance *= exp(-18.0 * length(emission));
+        }
+        if (uWorldCount > 0 && hitWorld && !worldFirst) worldLight(worldTint, light, transmittance);
+        // An opaque hit leaves no contribution from later segments or the escape tail.
+        if (uWorldCount > 0 && hitWorld) break;
+        if (uLayers.w > 0.5 && uProbeRadius > 0.0 && segmentLength > 0.0) light += probeEmission(position, segment / segmentLength, segmentLength) * transmittance;
+        float radius = length(position);
+        if (uLayers.x > 0.5 && radius < 8.5 && abs(plane0) < 0.7) {
+          float coronaOffset = (radius - 4.1) / 2.0;
+          float corona = exp(-abs(plane0) * 15.0) * exp(-coronaOffset * coronaOffset);
+          light += coronaColor * corona * segmentLength * transmittance;
+        }
+        position = nextPosition;
+        orbitRadial = nextRadial;
+        orbitTangent = nextTangent;
+        outgoing = nextVelocity;
+        u = nextU;
+        v = nextV;
       }
-      float angularLimit = min(min(maxAngle, ${G.flatAngle} + uLensing), criticalAngle + ${G.criticalStep} * abs(1.0 - 1.5 * uLensing * u) * criticalDistance);
-      float h = min(angularLimit, max(${G.minimumAngle.toFixed(6)}, ${G.radialStep} * u / max(abs(v), u)));
-      float a1 = 1.5 * uLensing * u * u - u;
-      float u2 = u + v * h * 0.5;
-      float v2 = v + a1 * h * 0.5;
-      float a2 = 1.5 * uLensing * u2 * u2 - u2;
-      float u3 = u + v2 * h * 0.5;
-      float v3 = v + a2 * h * 0.5;
-      float a3 = 1.5 * uLensing * u3 * u3 - u3;
-      float u4 = u + v3 * h;
-      float v4 = v + a3 * h;
-      float a4 = 1.5 * uLensing * u4 * u4 - u4;
-      float nextU = u + h / 6.0 * (v + 2.0 * v2 + 2.0 * v3 + v4);
-      float nextV = v + h / 6.0 * (a1 + 2.0 * a2 + 2.0 * a3 + a4);
-      if (nextU <= 0.0) {
-        float tail = h * u / (u - nextU);
-        outgoing = orbitRadial * cos(tail) + orbitTangent * sin(tail);
-        break;
+
+      if (uWorldCount > 0 && transmittance > 0.0 && !captured && v < 0.0) {
+        float hitDistance;
+        vec3 tint;
+        if (worldHit(position, normalize(outgoing), 1000000.0, hitDistance, tint)) worldLight(tint, light, transmittance);
       }
-      // Bounded-angle Taylor rotations avoid transcendental work in the orbit loop.
-      float h2 = h * h;
-      float s = h * (1.0 + h2 * (-1.0 / 6.0 + h2 * (1.0 / 120.0 - h2 / 5040.0)));
-      float c = 1.0 + h2 * (-1.0 / 2.0 + h2 * (1.0 / 24.0 - h2 / 720.0));
-      vec3 nextRadial = orbitRadial * c + orbitTangent * s;
-      vec3 nextTangent = -orbitRadial * s + orbitTangent * c;
-      vec3 nextPosition = nextRadial / nextU;
-      vec3 nextVelocity = normalize(-nextV * nextRadial + nextU * nextTangent);
-      vec3 segment = nextPosition - position;
-      float segmentLength = length(segment);
-      float plane0 = dot(position, normal);
-      float plane1 = dot(nextPosition, normal);
-      if (uLayers.x > 0.5 && plane0 * plane1 < 0.0) {
-        // The orbital plane fixes the crossing angle independently of radius.
-        float planeRadial = dot(orbitRadial, normal);
-        float planeTangent = dot(orbitTangent, normal);
-        float fraction = atan(abs(planeRadial), abs(planeTangent)) / h;
-        float slope0 = h * v, slope1 = h * nextV;
-        float quadratic = 3.0 * (nextU - u) - 2.0 * slope0 - slope1;
-        float cubic = 2.0 * (u - nextU) + slope0 + slope1;
-        float crossingU = u + fraction * (slope0 + fraction * (quadratic + fraction * cubic));
-        float crossingV = (slope0 + fraction * (2.0 * quadratic + fraction * 3.0 * cubic)) / h;
-        vec3 crossingRadial = normalize(orbitRadial * abs(planeTangent) + orbitTangent * abs(planeRadial));
-        vec3 crossingTangent = normalize(-orbitRadial * abs(planeRadial) + orbitTangent * abs(planeTangent));
-        vec3 crossing = crossingRadial / crossingU;
-        vec3 crossingVelocity = normalize(-crossingV * crossingRadial + crossingU * crossingTangent);
-        float diskPixel = pixelAngle * observerRadius / lapse * (1.0 + 0.2 / max(abs(impact - critical), 0.03));
-        vec3 emission = diskEmission(crossing, crossingVelocity, normal, diskPixel);
-        light += emission * transmittance;
-        transmittance *= exp(-18.0 * length(emission));
-      }
-      if (uLayers.w > 0.5 && uProbeRadius > 0.0 && segmentLength > 0.0) light += probeEmission(position, segment / segmentLength, segmentLength) * transmittance;
-      float radius = length(position);
-      if (uLayers.x > 0.5 && radius < 8.5 && abs(plane0) < 0.7) {
-        float coronaOffset = (radius - 4.1) / 2.0;
-        float corona = exp(-abs(plane0) * 15.0) * exp(-coronaOffset * coronaOffset);
-        light += coronaColor * corona * segmentLength * transmittance;
-      }
-      position = nextPosition;
-      orbitRadial = nextRadial;
-      orbitTangent = nextTangent;
-      outgoing = nextVelocity;
-      u = nextU;
-      v = nextV;
     }
 
-    // Evaluate derivatives on both sides of the analytic boundary before coverage.
+    // Shortcut lanes rejoin before derivatives so impact=weakEnd has valid neighbours.
     outgoing = normalize(mix(outgoing, weakRay, smoothstep(${G.weakStart.toFixed(1)}, ${G.weakEnd.toFixed(1)}, impact)));
-    vec3 background = observedSky(outgoing, pixelAngle, 1.0 / lapse);
+    vec3 skyRay = impact >= ${G.weakEnd.toFixed(1)} ? weakSkyRay : normalize(outgoing);
+    vec3 skyDx = dFdx(skyRay), skyDy = dFdy(skyRay);
+    if (impact >= ${G.weakEnd.toFixed(1)}) {
+      skyDx = weakSkyDx;
+      skyDy = weakSkyDy;
+    }
+    vec3 background = observedSky(skyRay, skyDx, skyDy, pixelAngle, 1.0 / lapse);
+    if (weakShortcut) {
+      gl_FragColor = vec4(background * vignette, 1.0);
+      return;
+    }
     float shadowPixel = max(fwidth(mu - shadowCos), 1e-7);
     float skyCoverage = smoothstep(-shadowPixel * 0.5, shadowPixel * 0.5, shadowCos - mu);
     light += background * transmittance * skyCoverage;

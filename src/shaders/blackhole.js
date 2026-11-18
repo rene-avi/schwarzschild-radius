@@ -723,6 +723,19 @@ export const kerrFragmentShader = fragmentShader.slice(0, fragmentShader.indexOf
     return fraction <= 1.0 ? fraction : -1.0;
   }
 
+  float kerrWorldHit(vec3 start, vec3 end, vec3 c0, vec3 c1, float radius, float pixel, out float coverage) {
+    vec3 relative = start - c0, delta = (end - start) - (c1 - c0);
+    float A = dot(delta, delta), B = dot(relative, delta), C = dot(relative, relative);
+    coverage = 0.0;
+    if (A <= 0.0) return -1.0;
+    float perpendicular = sqrt(max(0.0, C - B * B / A));
+    coverage = 1.0 - smoothstep(radius - pixel * 0.5, radius + pixel * 0.5, perpendicular);
+    float root = sqrt(max(0.0, B * B - A * (C - radius * radius)));
+    float near = (-B - root) / A, far = (-B + root) / A;
+    float fraction = near >= 0.0 ? near : far;
+    return coverage > 0.0 && fraction >= 0.0 && fraction <= 1.0 ? fraction : -1.0;
+  }
+
   vec3 kerrWorldLight(int world, vec3 x, vec3 center, vec3 direction, float g, float footprint) {
     vec3 normal = normalize(x - center);
     float terrain = 0.65 * skyNoise(normal * 2.0 + 7.3, footprint * 2.0)
@@ -851,11 +864,13 @@ export const kerrFragmentShader = fragmentShader.slice(0, fragmentShader.indexOf
         if (radius >= uKerrInner && radius <= 8.6) diskFraction = t;
       }
       vec2 worldFraction = vec2(-1.0);
+      vec2 worldCoverage = vec2(0.0);
       for (int j = 0; j < 2; j++) {
         if (j >= uWorldCount || seenWorld[j]) continue;
         vec3 c0 = kerrWorldCenter(uKerrWorldOrbit[j], uKerrWorldPhase[j], previousTime, a);
         vec3 c1 = kerrWorldCenter(uKerrWorldOrbit[j], uKerrWorldPhase[j], rayTime, a);
-        worldFraction[j] = kerrMovingHit(previous, x, c0, c1, vec3(uWorldRadius[j]));
+        float pixel = distance(uKerrPosition, mix(c0, c1, 0.5)) * pixelAngle / uKerrLapse;
+        worldFraction[j] = kerrWorldHit(previous, x, c0, c1, uWorldRadius[j], pixel, worldCoverage[j]);
       }
       float probeFraction = -1.0;
       vec3 pc0, pc1; vec4 pu0, pu1; float tau0, tau1;
@@ -909,8 +924,9 @@ export const kerrFragmentShader = fragmentShader.slice(0, fragmentShader.indexOf
           vec3 c1 = kerrWorldCenter(uKerrWorldOrbit[world], uKerrWorldPhase[world], rayTime, a);
           vec3 center = mix(c0, c1, nearest);
           float g = kerrWorldShift(crossing, crossingP, pt, uKerrWorldOrbit[world], a);
-          light += kerrWorldLight(world, crossing, center, normalize(x - previous), g, pixelAngle / uWorldRadius[world]) * transmittance;
-          transmittance = 0.0;
+          float footprint = distance(uKerrPosition, center) * pixelAngle / (uKerrLapse * uWorldRadius[world]);
+          light += kerrWorldLight(world, crossing, center, normalize(x - previous), g, footprint) * transmittance * worldCoverage[world];
+          transmittance *= 1.0 - worldCoverage[world];
           seenWorld[world] = true; worldFraction[world] = -1.0;
         }
       }

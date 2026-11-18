@@ -7,6 +7,20 @@ const timing = new WeakMap();
 const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
 function finite(value) { if (!Number.isFinite(value)) throw new RangeError('Probe input must be finite.'); }
 
+export function probeDropRefusal(position, spin) {
+  observerFrame(position, spin);
+  // Spherical camera coordinates can round a boundary radius a few ulps outwards.
+  return Math.hypot(...position) <= PROBE_INITIAL_RADIUS * (1 + 4 * Number.EPSILON)
+    ? `Probe not released: the camera must be outside the release radius (${PROBE_INITIAL_RADIUS} r_s).`
+    : null;
+}
+
+function historySample(history, fraction) {
+  if (fraction >= 1) return history.at(-1);
+  const start = history[0].t, end = history.at(-1).t;
+  return historyAt(history, Math.max(start, Math.min(end, start + (end - start) * fraction)));
+}
+
 export function probeInvariants(state, spin) {
   const u = kerrVelocity(state, spin), r = blRadius(state.x, spin), a = spin / 2, E = -state.pt;
   const [X, Y, Z] = state.x, Lz = X * state.p[1] - Y * state.p[0];
@@ -50,7 +64,9 @@ export function historyAt(history, time) {
   const dt = b.t - a.t, s = (time - a.t) / dt;
   const x = a.x.map((v, i) => (2 * s ** 3 - 3 * s * s + 1) * v + (s ** 3 - 2 * s * s + s) * dt * a.u[i + 1] / a.u[0]
     + (-2 * s ** 3 + 3 * s * s) * b.x[i] + (s ** 3 - s * s) * dt * b.u[i + 1] / b.u[0]);
-  return { t: time, x, u: a.u.map((v, i) => v + s * (b.u[i] - v)), tau: a.tau + s * (b.tau - a.tau),
+  const tau = (2 * s ** 3 - 3 * s * s + 1) * a.tau + (s ** 3 - 2 * s * s + s) * dt / a.u[0]
+    + (-2 * s ** 3 + 3 * s * s) * b.tau + (s ** 3 - s * s) * dt / b.u[0];
+  return { t: time, x, u: a.u.map((v, i) => v + s * (b.u[i] - v)), tau,
     p: a.p.map((v, i) => v + s * (b.p[i] - v)), pt: a.pt, radius: a.radius + s * (b.radius - a.radius) };
 }
 
@@ -62,12 +78,14 @@ export function probeImage(position, spin, event, initialDirection, imageSeeds) 
 }
 
 export function createKerrProbe({ position, direction = [0, 0, 1], spin } = {}) {
+  const refusal = probeDropRefusal(position, spin);
+  if (refusal) return { metric: 'kerr', state: 'refused', notice: refusal };
   const receiver = observerFrame(position, spin), history = integrateProbe({ direction, spin });
-  const timeline = [], last = history.at(-1).t;
+  const timeline = [];
   let previous, initialDirection, imageSeeds;
   // Reception is computed once for the fixed drop ZAMO; moving the camera changes only the picture.
-  for (let i = 0; i <= 192; i++) {
-    const event = historyAt(history, last * i / 192), image = probeImage(position, spin, event, initialDirection, imageSeeds);
+  for (let i = 0; i <= 64; i++) {
+    const event = historySample(history, i / 64), image = probeImage(position, spin, event, initialDirection, imageSeeds);
     initialDirection = image.direction;
     imageSeeds = image.imageSeeds;
     const arrival = event.t + image.delay;
@@ -75,16 +93,22 @@ export function createKerrProbe({ position, direction = [0, 0, 1], spin } = {}) 
     if (i === 0) row.receptionTime = 0;
     else row.receptionTime = arrival - timeline[0].arrival;
     timeline.push(row);
-    previous = row;
   }
-  // Continue images in both emission-time directions across lensing caustics.
-  initialDirection = timeline.at(-1).direction;
+  // A missed primary branch is continued backwards in small emission-time steps.
   for (let i = timeline.length - 2; i >= 0; i--) {
-    const row = timeline[i], image = probeImage(position, spin, row, initialDirection, [row.direction, initialDirection]);
+    const row = timeline[i], next = timeline[i + 1];
+    if (row.arrival < next.arrival) continue;
+    let image, t = next.t;
+    initialDirection = next.direction;
+    imageSeeds = [initialDirection];
+    while (t > row.t) {
+      t = Math.max(row.t, t - 0.05);
+      image = probeImage(position, spin, historyAt(history, t), initialDirection, imageSeeds);
+      initialDirection = image.direction; imageSeeds = image.imageSeeds;
+    }
     if (image.delay < row.arrival - row.t) {
       row.arrival = row.t + image.delay; row.signal = image.g; row.direction = image.direction;
     }
-    initialDirection = row.direction;
   }
   const origin = timeline[0].arrival;
   for (let i = 0; i < timeline.length; i++) {
@@ -97,9 +121,12 @@ export function createKerrProbe({ position, direction = [0, 0, 1], spin } = {}) 
   previous = timeline[lossIndex - 1]; initialDirection = timeline[lossIndex].direction;
   imageSeeds = [previous.direction, initialDirection];
   let low = previous.t, high = timeline.at(-1).t;
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 20; i++) {
     const t = (low + high) / 2, event = historyAt(history, t);
-    if (probeImage(position, spin, event, initialDirection, imageSeeds).g >= PROBE_LOST_SIGNAL) low = t; else high = t;
+    const image = probeImage(position, spin, event, initialDirection, imageSeeds);
+    initialDirection = image.direction;
+    imageSeeds = image.imageSeeds;
+    if (image.g >= PROBE_LOST_SIGNAL) low = t; else high = t;
   }
   const lost = historyAt(history, high), lostImage = probeImage(position, spin, lost, initialDirection, imageSeeds);
   timeline[timeline.length - 1] = { ...lost, signal: lostImage.g, arrival: high + lostImage.delay,
@@ -152,7 +179,20 @@ export function updateKerrProbe(probe, dt, timeScale = 1) {
 export function probeWindow(probe) {
   const data = timing.get(probe);
   if (!data) throw new RangeError('Unknown Kerr probe.');
-  const lo = 0, hi = data.history.at(-1).t;
-  data.knots ??= Array.from({ length: KERR_PROBE_KNOTS }, (_, i) => historyAt(data.history, lo + (hi - lo) * i / (KERR_PROBE_KNOTS - 1)));
+  data.knots ??= Array.from({ length: KERR_PROBE_KNOTS }, (_, i) => historySample(data.history, i / (KERR_PROBE_KNOTS - 1)));
   return data.knots;
+}
+
+/** Only compact telemetry history crosses the worker boundary; render knots stay unchanged. */
+export function packKerrProbe(probe) {
+  const data = timing.get(probe);
+  if (!data) throw new RangeError('Unknown Kerr probe.');
+  const history = [...Array.from({ length: 384 }, (_, i) => historySample(data.history, i / 383)), ...data.timeline]
+    .sort((a, b) => a.t - b.t).filter((row, i, rows) => !i || row.t > rows[i - 1].t);
+  return { probe, data: { ...data, history, knots: probeWindow(probe) } };
+}
+
+export function unpackKerrProbe(packet) {
+  timing.set(packet.probe, packet.data);
+  return packet.probe;
 }

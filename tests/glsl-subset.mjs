@@ -10,20 +10,21 @@ const builtins = {
   clamp: (x, a, b) => Math.max(a, Math.min(b, x)), fract: x => x - Math.floor(x),
   smoothstep: (a, b, x) => { const s = Math.max(0, Math.min(1, (x - a) / (b - a))); return s * s * (3 - 2 * s); },
   length: a => Math.hypot(...a), normalize: a => a.map(v => v / Math.hypot(...a)), dot,
+  distance: (a, b) => Math.hypot(...a.map((v, i) => v - b[i])),
   cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
   vec2: (...v) => v.length === 1 && !Array.isArray(v[0]) ? [v[0], v[0]] : v.flat(),
   vec3: (...v) => v.length === 1 && !Array.isArray(v[0]) ? [v[0], v[0], v[0]] : v.flat(),
   vec4: (...v) => v.flat(),
   mix: (a, b, t) => binary(binary(a, 1 - t, (x, y) => x * y), binary(b, t, (x, y) => x * y), (x, y) => x + y),
 };
-const precedence = { '<': 1, '>': 1, '<=': 1, '>=': 1, '+': 2, '-': 2, '*': 3, '/': 3 };
+const precedence = { '||': 0, '&&': 0, '<': 1, '>': 1, '<=': 1, '>=': 1, '+': 2, '-': 2, '*': 3, '/': 3 };
 const operations = { '+': (a, b) => a + b, '-': (a, b) => a - b, '*': (a, b) => a * b,
   '/': (a, b) => a / b, '<': (a, b) => a < b, '>': (a, b) => a > b,
-  '<=': (a, b) => a <= b, '>=': (a, b) => a >= b };
+  '<=': (a, b) => a <= b, '>=': (a, b) => a >= b, '&&': (a, b) => a && b, '||': (a, b) => a || b };
 
 export function evaluate(expression, values = {}, functions = {}) {
   const tokens = [];
-  const lexer = /\s*(\d+(?:\.\d*)?(?:e[+-]?\d+)?|[A-Za-z_]\w*|<=|>=|[+*/().,<>?:-])/gy;
+  const lexer = /\s*(\d+(?:\.\d*)?(?:e[+-]?\d+)?|[A-Za-z_]\w*|<=|>=|&&|\|\||[\[\]+*/().,<>?:-])/gy;
   let offset = 0;
   while (expression.slice(offset).trim()) {
     lexer.lastIndex = offset;
@@ -52,11 +53,16 @@ export function evaluate(expression, values = {}, functions = {}) {
       assert.ok(Object.hasOwn(values, token), `Known GLSL variable ${token}`);
       value = values[token];
     }
-    while (tokens[cursor] === '.') {
-      cursor++;
-      const fields = tokens[cursor++].split('').map(c => 'xyzw'.indexOf(c));
-      assert.ok(Array.isArray(value) && fields.every(i => i >= 0 && i < value.length), 'valid swizzle');
-      value = fields.length === 1 ? value[fields[0]] : fields.map(i => value[i]);
+    while (tokens[cursor] === '.' || tokens[cursor] === '[') {
+      if (tokens[cursor++] === '[') {
+        const index = parse(); take(']');
+        assert.ok(Array.isArray(value) && Number.isInteger(index) && index >= 0 && index < value.length, 'valid array index');
+        value = value[index];
+      } else {
+        const fields = tokens[cursor++].split('').map(c => 'xyzw'.indexOf(c));
+        assert.ok(Array.isArray(value) && fields.every(i => i >= 0 && i < value.length), 'valid swizzle');
+        value = fields.length === 1 ? value[fields[0]] : fields.map(i => value[i]);
+      }
     }
     while (Object.hasOwn(precedence, tokens[cursor]) && precedence[tokens[cursor]] >= minimum) {
       const operator = tokens[cursor++];
@@ -77,7 +83,7 @@ export function evaluate(expression, values = {}, functions = {}) {
 export function functionBody(source, name) {
   const signature = source.indexOf(` ${name}(`);
   assert.ok(signature >= 0, `GLSL function ${name}`);
-  const start = source.indexOf('{', signature);
+  const start = source.indexOf('{', source.indexOf(')', signature));
   assert.ok(start >= 0, `GLSL function ${name}`);
   let depth = 1, end = start + 1;
   for (; end < source.length && depth; end++) depth += Number(source[end] === '{') - Number(source[end] === '}');

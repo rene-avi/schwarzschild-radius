@@ -82,9 +82,10 @@ export function directEventImage({ position, spin, eventAt, stepScale = 0.1, ini
   // Seed with the spatial coordinate velocity projected onto the local tetrad.
   const initial = frame.covectors.slice(1).map(cov => dot(cov.slice(1), forward));
   let n, result;
-  const shoot = (direction, refinement = stepScale) => {
+  let refinement = primary ? Math.max(0.4, stepScale) : stepScale;
+  const shoot = (direction, scale = refinement) => {
     let found;
-    traceRay({ position, spin, direction, stepScale: refinement, onChord(s, e) {
+    traceRay({ position, spin, direction, stepScale: scale, onChord(s, e) {
       const target0 = eventAt(s.t).x, target1 = eventAt(e.t).x;
       const d0 = blRadius(s.x, spin) - blRadius(target0, spin);
       const d1 = blRadius(e.x, spin) - blRadius(target1, spin);
@@ -98,7 +99,7 @@ export function directEventImage({ position, spin, eventAt, stepScale = 0.1, ini
         residual: [radius * Math.atan2(Math.sin(phi), Math.cos(phi)), radius * theta] };
       if (!found || Math.hypot(...candidate.residual) < Math.hypot(...found.residual)) found = candidate;
       // A nearby shooting branch needs no continuation behind its target shell.
-      return Math.hypot(...found.residual) < 0.05 * radius ? found : null;
+      return d1 > d0 || Math.hypot(...found.residual) < 1e-5 * radius ? found : null;
     } });
     return found;
   };
@@ -142,6 +143,7 @@ export function directEventImage({ position, spin, eventAt, stepScale = 0.1, ini
     if (!roots.some(seed => Math.hypot(...seed.map((v, i) => v - n[i])) < 1e-6)) roots.push([...n]);
   };
   if (solve(initialDirection ?? initial)) retain();
+  if (primary && initialDirection && solve(initial)) retain();
   const near = primary && blRadius(target, spin) < 2;
   if (near && imageSeeds) for (const seed of imageSeeds) {
     if (solve(seed)) retain();
@@ -158,6 +160,11 @@ export function directEventImage({ position, spin, eventAt, stepScale = 0.1, ini
     for (const seed of seeds.slice(0, 6)) if (solve(seed.direction)) retain();
   }
   if (!best) throw new RangeError('Direct image did not converge.');
+  if (refinement !== stepScale) {
+    refinement = stepScale;
+    if (!solve(best.n)) throw new RangeError('Direct image refinement did not converge.');
+    best = { n: [...n], result };
+  }
   ({ n, result } = best);
   const sceneDirection = frame.sceneBasis[0].map((_, j) => dot(n, frame.sceneBasis.map(v => v[j])));
   return { ...result, imageSeeds: near ? roots : undefined, direction: n, sceneDirection, delay: -result.t, radius: blRadius(result.x, spin) };

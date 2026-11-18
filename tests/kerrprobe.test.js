@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync,writeFileSync } from 'node:fs';
-import { integrateProbe,probeInvariants,historyAt,probeImage,createKerrProbe,updateKerrProbe,probeWindow,KERR_PROBE_KNOTS } from '../src/kerrprobe.js';
+import { integrateProbe,probeInvariants,historyAt,probeImage,createKerrProbe,updateKerrProbe,probeWindow,KERR_PROBE_KNOTS,packKerrProbe,unpackKerrProbe } from '../src/kerrprobe.js';
 import { probeCycloid, probeSignal, PROBE_LOST_SIGNAL } from '../src/physics.js';
 import { horizon } from '../src/kerrray.js';
 import { kerrFragmentShader } from '../src/shaders/blackhole.js';
@@ -96,10 +96,14 @@ test('actual GLSL per-pixel probe redshift uses p.u in the denominator',()=>{
 
 test('fixed drop receiver timeline stretches proper-time flashes, fades, and reaches loss',()=>{
  const probe=createKerrProbe({position:[0,23*Math.sin(.23),23*Math.cos(.23)],direction:[.4,.23,.9],spin:.998});
+ const packed=unpackKerrProbe(structuredClone(packKerrProbe(probe)));
  assert.ok(probe.lostTime>40&&probe.lostTime<70);
  const gaps=probe.flashEvents.slice(1).map((e,i)=>e.receptionTime-probe.flashEvents[i].receptionTime);
  assert.ok(gaps.at(-1)>2*gaps[0]);
  updateKerrProbe(probe,probe.flashEvents[25].receptionTime);
+ updateKerrProbe(packed,probe.flashEvents[25].receptionTime);
+ close(packed.properElapsed,probe.properElapsed,1e-10);
+ close(Math.hypot(...packed.position.map((v,i)=>v-probe.position[i])),0,1e-9);
  assert.equal(probe.flashCount,26);
  const knots=probeWindow(probe);assert.equal(knots.length,KERR_PROBE_KNOTS);assert.ok(knots.length>=32);
  const full=history(.998,[.4,.23,.9]);
@@ -112,6 +116,10 @@ test('fixed drop receiver timeline stretches proper-time flashes, fades, and rea
  let previousProper=probe.properElapsed;
  while(probe.state!=='lost'){
   updateKerrProbe(probe,.05);
+  updateKerrProbe(packed,.05);
+  close(Math.hypot(...packed.position.map((v,i)=>v-probe.position[i])),0,1e-6);
+  close(packed.properElapsed,probe.properElapsed,1e-4);
+  assert.equal(packed.state,probe.state);
   assert.ok(probe.properElapsed>=previousProper,'direct reception never reverses the onboard clock');
   previousProper=probe.properElapsed;
  }
@@ -119,6 +127,16 @@ test('fixed drop receiver timeline stretches proper-time flashes, fades, and rea
  assert.equal(probe.state,'lost');assert.ok(probe.signal<=PROBE_LOST_SIGNAL);
  evidence.timeline={lostTime:probe.lostTime,gaps,windowMaximumError:error};
  mkdirSync(new URL('../tmp/',import.meta.url),{recursive:true});writeFileSync(new URL('../tmp/kerr-probe-numbers.json',import.meta.url),JSON.stringify(evidence,null,2));
+});
+
+test('equatorial r_cam=23 near-extremal release history keeps the exact endpoint in 32 directions',()=>{
+ const c=Math.cos(25*Math.PI/180);
+ for(let i=0;i<32;i++){
+  const theta=2*Math.PI*i/32;
+  const events=integrateProbe({spin:.998,direction:[c*Math.sin(theta),.18,c*Math.cos(theta)]});
+  const probe=unpackKerrProbe({probe:{},data:{history:events}});
+  assert.equal(probeWindow(probe).at(-1),events.at(-1));
+ }
 });
 
 test('direct central probe image chooses the same earliest arrival across shooting seeds',()=>{

@@ -353,7 +353,8 @@ export const checks = [
       const off = await frame(page, outDir, 'worlds-off'), offExposure = await page.evaluate(() => window.eventHorizon.getState().exposure);
       await afterRender(page, { layers: { worlds: true } }); await settledExposure(page);
       const on = await frame(page, outDir, 'worlds-on'), state = await page.evaluate(() => window.eventHorizon.getState());
-      assert.ok(state.worlds.every(w => w.drawn)); assert.equal(state.worlds.some(w => w.id === 'brink'), false);
+      assert.deepEqual(state.worlds.map(w => w.id).sort(), ['farShore', 'lantern']);
+      assert.ok(state.worlds.every(w => w.drawn));
       assert.ok(Math.abs(state.exposure / offExposure - 1) <= .01);
       const basis = geometry(), rows = [];
       for (const world of state.worlds) {
@@ -383,8 +384,12 @@ export const checks = [
         assert.ok(interior.length > 3);
         rows.push({ id: world.id, point, polygon, changed: changed.length, maximumLimbError: Math.max(...errors) });
       }
+      const allChanged = differencePixels(on, off, { minX: 0, maxX: 899, minY: 0, maxY: 899 });
+      const unexpected = allChanged.filter(p => !rows.some(row => inPolygon(p.x, p.y, row.polygon)
+        || edgeDistance(p.x, p.y, row.polygon) <= 3));
+      assert.equal(unexpected.length, 0, `No third silhouette outside the two drawn worlds: ${unexpected.length} pixels`);
       assert.deepEqual(audit.consoleErrors, []);
-      await json(outDir, 'world-silhouettes', { rows, offExposure, onExposure: state.exposure });
+      await json(outDir, 'world-silhouettes', { rows, unexpected, offExposure, onExposure: state.exposure });
     },
   },
   {
@@ -441,14 +446,35 @@ export const checks = [
         assert.ok(p.pulse>.95,`onboard flash at received time ${target}`);
         await frame(page,outDir,`probe-flash-${tau}`);
       }
+      let fading = await page.evaluate(() => window.eventHorizon.getState().probe);
+      while (fading.state === 'falling' && elapsed < fading.lostTime) {
+        const step = Math.min(.25, fading.lostTime - elapsed);
+        await advanceProbe(page, step); elapsed += step;
+        fading = await page.evaluate(() => window.eventHorizon.getState().probe);
+      }
+      await page.waitForFunction(() => window.eventHorizon.getState().probe.state === 'fading'
+        && document.querySelector('[data-readout="probeState"]').textContent === 'SIGNAL FADING');
+      assert.equal(fading.state, 'fading');
+      assert.ok(fading.elapsed < fading.lostTime, 'fading precedes loss');
+      await frame(page, outDir, 'probe-fading');
       await advanceProbe(page,state.probe.lostTime-elapsed+1);
       await page.waitForFunction(()=>window.eventHorizon.getState().probe.state==='lost'
         && document.querySelector('[data-readout="probeState"]').textContent==='SIGNAL LOST');
       const lost=await frame(page,outDir,'probe-lost');
       await afterRender(page,{layers:{probe:false}});const off=await frame(page,outDir,'probe-lost-off');
       assert.equal(differencePixels(lost,off,{minX:0,maxX:899,minY:0,maxY:899}).length,0);
+      await afterRender(page, { camera: { ...camera, radius: 7, elevation: .23 } });
+      await page.keyboard.press('KeyH');
+      await page.waitForFunction(() => !document.body.classList.contains('hud-hidden'));
+      await page.keyboard.press('KeyP');
+      await page.waitForFunction(() => {
+        const notice = document.querySelector('.notice');
+        return notice.classList.contains('visible') && /camera must be outside the release radius/.test(notice.textContent);
+      });
+      const refusal = await page.locator('.notice').textContent();
+      await frame(page, outDir, 'probe-refused');
       assert.deepEqual(audit.consoleErrors,[]);
-      await json(outDir,'probe-history',{rows,gaps,flashes,independentFlashes,lost:await page.evaluate(()=>window.eventHorizon.getState().probe)});
+      await json(outDir,'probe-history',{rows,gaps,flashes,independentFlashes,fading,refusal,lost:await page.evaluate(()=>window.eventHorizon.getState().probe)});
     },
   },
 ];

@@ -8,7 +8,8 @@ import { allowsShortcut, shortcutForCode, shortcutNotice } from './shortcuts.js'
 import { spinFromDelta } from './kerr.js';
 import { KERR_RAY, zamoClockRate, pictureSpin } from './kerrray.js';
 import { worldEvent, worldImage, photonOrbit } from './kerrworlds.js';
-import { createKerrProbe, updateKerrProbe } from './kerrprobe.js';
+import { probeDropRefusal, unpackKerrProbe, updateKerrProbe } from './kerrprobe.js';
+import KerrProbeWorker from './kerrprobe-worker.js?worker&inline';
 import { reset as resetLedger, advance as advanceLedger, travel as travelLedger } from './ledger.js';
 import { crewStep } from './mission.js';
 import { START_PHASES, advancePhases, drawnWorlds, retardedPosition } from './worldview.js';
@@ -24,6 +25,11 @@ let ledger = resetLedger();
 let missionRunning = false;
 let paused = false;
 let probe = null;
+let probeWorker = null;
+function cancelProbeDrop() {
+  probeWorker?.terminate();
+  probeWorker = null;
+}
 let simulationTime = 0;
 let worldPhases = { ...START_PHASES };
 let worldsLayer = true;
@@ -60,12 +66,12 @@ function pictureWorldState({ id, drawn, center, radius, phase, radiusM }) {
   const spin = pictureSpin(settings.spinDelta), position = camera.position.toArray();
   const key = JSON.stringify([phase, position, spin]);
   let cached = kerrWorldImages.get(id);
-  if (cached?.key !== key) {
+  if (drawn && cached?.key !== key) {
     let image;
     try { image = worldImage({ radius: radiusM / 2, phase, position, spin }); } catch { /* Occulted direct images have no centre. */ }
     cached = { key, image }; kerrWorldImages.set(id, cached);
   }
-  const image = cached.image;
+  const image = cached?.key === key ? cached.image : undefined;
   return { id, drawn, radius, phase, orbitRadius: radiusM / 2, center: image ? [image.x[1], image.x[2], image.x[0]] : null,
     direction: image ? [...image.sceneDirection] : undefined, delay: image?.delay };
 }
@@ -74,17 +80,47 @@ function action(type) {
   if (metric === 'kerr' && ['fly', 'cinematic'].includes(type)) return;
   switch (type) {
     case 'probe':
-      {
+      try {
+        cancelProbeDrop();
         const tilt = metric === 'kerr' ? 0 : settings.tilt * Math.PI / 180;
         const normal = [0, Math.cos(tilt), -Math.sin(tilt)];
         const radial = camera.position.clone().normalize().multiplyScalar(Math.cos(25 * Math.PI / 180));
         radial.addScaledVector(camera.right, Math.sin(25 * Math.PI / 180));
         const clearance = Math.max(0, 0.18 - radial.toArray().reduce((sum, v, i) => sum + v * normal[i], 0));
         const direction = radial.toArray().map((value, i) => value + clearance * normal[i]);
-        probe = metric === 'kerr' ? createKerrProbe({ position: camera.position.toArray(), direction, spin: pictureSpin(settings.spinDelta) })
-          : createProbe({ observerRadius: Math.max(7, camera.radius), direction });
+        if (metric === 'kerr') {
+          const drop = { position: camera.position.toArray(), direction, spin: pictureSpin(settings.spinDelta) };
+          const refusal = probeDropRefusal(drop.position, drop.spin);
+          if (refusal) { ui.setNotice(refusal); break; }
+          const worker = new KerrProbeWorker();
+          probeWorker = worker;
+          ui.setNotice('Computing the Kerr probe reception timeline…');
+          worker.onmessage = ({ data }) => {
+            if (probeWorker !== worker) return;
+            try {
+              if (data.notice) ui.setNotice(data.notice);
+              else {
+                probe = unpackKerrProbe(data.packet);
+                ui.setNotice('Watch the beacon: one flash per second of its own time.');
+              }
+            } catch (error) { ui.setNotice(`Probe not released: ${error.message}`); }
+            cancelProbeDrop();
+          };
+          worker.onerror = event => {
+            event.preventDefault();
+            if (probeWorker !== worker) return;
+            ui.setNotice(`Probe not released: ${event.message || 'the reception calculation failed.'}`);
+            cancelProbeDrop();
+          };
+          worker.postMessage(drop);
+          break;
+        }
+        probe = createProbe({ observerRadius: Math.max(7, camera.radius), direction });
+        ui.setNotice('Watch the beacon: one flash per second of its own time.');
+      } catch (error) {
+        cancelProbeDrop();
+        ui.setNotice(`Probe not released: ${error.message}`);
       }
-      ui.setNotice('Watch the beacon: one flash per second of its own time.');
       break;
     case 'cinematic':
       camera.setMode(camera.mode === 'cinematic' ? 'orbit' : 'cinematic');
@@ -102,6 +138,7 @@ function action(type) {
       ui.setNotice('STELLAR ALIGNMENT · A background star forms an Einstein ring');
       break;
     case 'reset':
+      cancelProbeDrop();
       camera.reset();
       probe = null;
       clock = 0;
@@ -130,6 +167,7 @@ ui = createUI({
   initialPreset: 'gargantua',
   onPreset(id) {
     if (!PRESETS[id]) return;
+    cancelProbeDrop();
     Object.assign(settings, PRESETS[id]);
     refreshVisualSpin();
     setPictureLensing();
@@ -141,7 +179,7 @@ ui = createUI({
   },
   onChange(key, value) {
     if (key in settings && Number.isFinite(value)) settings[key] = value;
-    if (key === 'spinDelta') { refreshVisualSpin(); if (metric === 'kerr') probe = null; }
+    if (key === 'spinDelta') { refreshVisualSpin(); if (metric === 'kerr') { cancelProbeDrop(); probe = null; } }
     if (key === 'lensing') setPictureLensing();
     if (key === 'tilt' || key === 'spinDelta') camera.setDisk(settings.tilt, settings.spin);
   },

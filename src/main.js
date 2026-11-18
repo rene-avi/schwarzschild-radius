@@ -90,7 +90,7 @@ function action(type) {
         const direction = radial.toArray().map((value, i) => value + clearance * normal[i]);
         if (metric === 'kerr') {
           const drop = { position: camera.position.toArray(), direction, spin: pictureSpin(settings.spinDelta) };
-          const refusal = probeDropRefusal(drop.position, drop.spin);
+          const refusal = probeDropRefusal(drop.position, drop.spin, drop.direction);
           if (refusal) { ui.setNotice(refusal); break; }
           const worker = new KerrProbeWorker();
           probeWorker = worker;
@@ -110,6 +110,11 @@ function action(type) {
             event.preventDefault();
             if (probeWorker !== worker) return;
             ui.setNotice(`Probe not released: ${event.message || 'the reception calculation failed.'}`);
+            cancelProbeDrop();
+          };
+          worker.onmessageerror = () => {
+            if (probeWorker !== worker) return;
+            ui.setNotice('Probe not released: the reception calculation could not be decoded.');
             cancelProbeDrop();
           };
           worker.postMessage(drop);

@@ -1,4 +1,4 @@
-import { blRadius, metricProduct, observerFrame, traceRay } from './kerrray.js';
+import { blRadius, metricProduct, observerFrame, traceRay, receptionImage } from './kerrray.js';
 
 const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
 const sub = (a, b) => a.map((v, i) => v - b[i]);
@@ -75,6 +75,7 @@ export function traceWorld({ radius, phase, bodyRadius, ...ray }) {
 
 /** Shoot a direct event curve x(t), retaining the closer angular match at either radius crossing. */
 export function directEventImage({ position, spin, eventAt, stepScale = 0.1, initialDirection, primary = false, imageSeeds }) {
+  if (primary) return receptionImage({ position, spin, eventAt, stepScale, initialDirection, imageSeeds });
   const frame = observerFrame(position, spin);
   let target = eventAt(0).x;
   for (let i = 0; i < 8; i++) target = eventAt(-Math.hypot(...sub(target, frame.position))).x;

@@ -10,7 +10,7 @@ const close=(a,b,t=1e-9)=>assert.ok(Math.abs(a-b)<t,`${a} vs ${b} tolerance ${t}
 const histories=new Map();
 const history=(spin,direction=[0,0,1])=>{
  const key=JSON.stringify([spin,direction]);
- if(!histories.has(key))histories.set(key,integrateProbe({spin,direction}));
+ if(!histories.has(key))histories.set(key,integrateProbe({spin,direction,endUt:512}));
  return histories.get(key);
 };
 const evidence={};

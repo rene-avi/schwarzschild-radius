@@ -460,21 +460,38 @@ export const checks = [
       await advanceProbe(page,state.probe.lostTime-elapsed+1);
       await page.waitForFunction(()=>window.eventHorizon.getState().probe.state==='lost'
         && document.querySelector('[data-readout="probeState"]').textContent==='SIGNAL LOST');
+      const lostProbe = await page.evaluate(() => window.eventHorizon.getState().probe);
       const lost=await frame(page,outDir,'probe-lost');
       await afterRender(page,{layers:{probe:false}});const off=await frame(page,outDir,'probe-lost-off');
       assert.equal(differencePixels(lost,off,{minX:0,maxX:899,minY:0,maxY:899}).length,0);
-      await afterRender(page, { camera: { ...camera, radius: 7, elevation: .23 } });
+      await afterRender(page, { camera: { ...camera, radius: 3, elevation: .23 } });
       await page.keyboard.press('KeyH');
       await page.waitForFunction(() => !document.body.classList.contains('hud-hidden'));
       await page.keyboard.press('KeyP');
       await page.waitForFunction(() => {
-        const notice = document.querySelector('.notice');
-        return notice.classList.contains('visible') && /camera must be outside the release radius/.test(notice.textContent);
-      });
-      const refusal = await page.locator('.notice').textContent();
-      await frame(page, outDir, 'probe-refused');
+        const probe = window.eventHorizon.getState().probe;
+        return probe?.state === 'falling' && probe.elapsed === 0 && probe.signal > 1
+          && Number(document.querySelector('[data-readout="probeSignal"]').textContent) > 1;
+      }, null, { timeout: 120000 });
+      const closeProbe = await page.evaluate(() => window.eventHorizon.getState().probe);
+      assert.ok(closeProbe.signal > 1, 'the actual inner receiver sees a release blueshift');
+      const closeBasis = geometry(.23), closePosition = closeBasis.radial.map(v => 3 * v);
+      const closeImage = probeImage(closePosition, .998, history[0]);
+      // At release the source is behind the inward-looking camera; turn the view after the drop.
+      const yaw = Math.asin(dot(closeImage.sceneDirection, closeBasis.right));
+      const pitch = Math.atan2(dot(closeImage.sceneDirection, closeBasis.up), -dot(closeImage.sceneDirection, closeBasis.radial));
+      await afterRender(page, { camera: { ...camera, radius: 3, elevation: .23, yaw, pitch }, layers: { probe: true } });
+      await hide(page);
+      await settledExposure(page);
+      const closeOn = await frame(page, outDir, 'probe-close-blueshift');
+      await afterRender(page, { layers: { probe: false } });
+      const closeOff = await frame(page, outDir, 'probe-close-off');
+      const closePixels = differencePixels(closeOn, closeOff, { minX: centre - 20, maxX: centre + 20, minY: centre - 20, maxY: centre + 20 });
+      assert.ok(closePixels.length > 0, 'the close-camera probe hull is visible');
+      await afterRender(page, { layers: { probe: true } });
       assert.deepEqual(audit.consoleErrors,[]);
-      await json(outDir,'probe-history',{rows,gaps,flashes,independentFlashes,fading,refusal,lost:await page.evaluate(()=>window.eventHorizon.getState().probe)});
+      await json(outDir,'probe-history',{rows,gaps,flashes,independentFlashes,fading,closeProbe,closePixels:closePixels.length,
+        lost:lostProbe});
     },
   },
 ];

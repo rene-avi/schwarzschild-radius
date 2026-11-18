@@ -154,6 +154,90 @@ export function kerrStep(state, spin, h) {
   return rkStep(state, spinValue(spin), h, false);
 }
 
+/** Null boundary solve in affine length, avoiding a singular shooting chart at a radial turn. */
+export function receptionImage({ position, spin, eventAt, initialDirection, imageSeeds, stepScale = 0.1 }) {
+  const frame = observerFrame(position, spin), a = spinValue(spin), surface = horizon(spin) + KERR_RAY.epsilon;
+  const rp = horizon(spin);
+  const coarseScale = Math.max(.8, stepScale);
+  if (!Number.isFinite(stepScale) || stepScale <= 0 || stepScale > 1) throw new RangeError('Invalid reception step.');
+  const target = eventAt(0).x;
+  vector(target);
+  const delta = target.map((v, i) => v - frame.position[i]), distance = Math.hypot(...delta);
+  if (!(distance > 0)) throw new RangeError('Receiver coincides with the emission event.');
+  const initial = norm(frame.covectors.slice(1).map(cov => dot(cov.slice(1), delta)));
+  const trace = (n, length, scale) => {
+    const cov = frame.covectors[0].map((v, i) => -v + n[0] * frame.covectors[1][i]
+      + n[1] * frame.covectors[2][i] + n[2] * frame.covectors[3][i]);
+    let state = { x: frame.position, p: cov.slice(1), pt: cov[0], t: 0 }, affine = 0;
+    for (let i = 0; i < 12000; i++) {
+      const r = radiusAt(state.x, a);
+      if (r <= surface || r > 512) return null;
+      if (affine >= length) return { ...state, affine: length };
+      const h = Math.min(length - affine, scale * Math.min(0.06 * (r - rp), 8));
+      state = rkStep(state, a, h, false); affine += h;
+    }
+    return null;
+  };
+  const solve = (seed, scale) => {
+    let n = norm(seed.direction ?? seed), length = seed.affine ?? distance;
+    let state;
+    for (let i = 0; i < 18; i++) {
+      state = trace(n, length, scale);
+      if (!state) return null;
+      const center = eventAt(state.t).x, residual = state.x.map((v, j) => v - center[j]);
+      const error = Math.hypot(...residual);
+      if (error < 2e-9) return { ...state, direction: n, stepScale: scale };
+      const e1 = norm(Math.abs(n[0]) > .7 ? [-n[1], n[0], 0] : [0, -n[2], n[1]]);
+      const e2 = cross(n, e1), eps = 1e-6;
+      const derivatives = [e1, e2].map(e => {
+        const ray = trace(norm(n.map((v, j) => v + eps * e[j])), length, scale);
+        if (!ray) return null;
+        const c = eventAt(ray.t).x;
+        return ray.x.map((v, j) => (v - c[j] - residual[j]) / eps);
+      });
+      if (derivatives.some(v => !v)) return null;
+      const velocity = flow(state, a, false), future = eventAt(state.t + 1e-5).x;
+      const v = velocity.dx.map((q, j) => q - (future[j] - center[j]) / 1e-5 * velocity.dt);
+      const [u, w] = derivatives, determinant = dot(u, cross(w, v));
+      if (Math.abs(determinant) < 1e-12) return null;
+      const du = dot(residual, cross(w, v)) / determinant;
+      const dw = dot(u, cross(residual, v)) / determinant;
+      const dl = dot(u, cross(w, residual)) / determinant;
+      let accepted = false;
+      for (let damping = 1; damping >= 1 / 1024; damping /= 2) {
+        const candidate = norm(n.map((q, j) => q - damping * (du * e1[j] + dw * e2[j])));
+        const l = length - damping * dl;
+        if (!(l > 0)) continue;
+        const ray = trace(candidate, l, scale);
+        if (ray && Math.hypot(...ray.x.map((q, j) => q - eventAt(ray.t).x[j])) < error) {
+          n = candidate; length = l; accepted = true; break;
+        }
+      }
+      if (!accepted) return null;
+    }
+    return null;
+  };
+  let best;
+  const retain = root => { if (root && (!best || root.t > best.t)) best = root; };
+  for (const seed of imageSeeds ?? []) retain(solve(seed, seed.affine ? stepScale : coarseScale));
+  if (!best) retain(solve(initialDirection ?? initial, coarseScale));
+  if (!best || radiusAt(target, a) < 2) retain(solve(initial, coarseScale));
+  if (!best) {
+    for (const radial of [-.99, -.9, -.5, 0, .5, .8, .95, .995]) {
+      const transverse = Math.hypot(initial[1], initial[2]);
+      const factor = Math.sqrt(1 - radial * radial);
+      retain(solve([radial, factor * (transverse ? initial[1] / transverse : 0), factor * (transverse ? initial[2] / transverse : 1)], coarseScale));
+    }
+  }
+  if (!best) throw new RangeError('Direct image did not converge.');
+  if (best.stepScale !== stepScale) best = solve(best, stepScale);
+  if (!best) throw new RangeError('Direct image refinement did not converge.');
+  const n = best.direction;
+  return { ...best, delay: -best.t, radius: radiusAt(best.x, a),
+    imageSeeds: [{ direction: n, affine: best.affine }],
+    sceneDirection: frame.sceneBasis[0].map((_, j) => dot(n, frame.sceneBasis.map(v => v[j]))) };
+}
+
 export function metricProduct(x, spin, u, v) {
   vector(x);
   if (![u, v].every(w => Array.isArray(w) && w.length === 4 && w.every(Number.isFinite))) throw new RangeError('Expected finite four-vectors.');

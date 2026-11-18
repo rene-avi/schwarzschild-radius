@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
-import { createKerrProbe, probeDropRefusal, unpackKerrProbe, updateKerrProbe } from '../src/kerrprobe.js';
+import { createKerrProbe, probeDropRefusal, packKerrProbe, unpackKerrProbe, updateKerrProbe } from '../src/kerrprobe.js';
+import { KERR_RAY } from '../src/kerrray.js';
 
 function drop(radius, elevation, spin, theta = 0) {
   const c = Math.cos(25 * Math.PI / 180), s = Math.sin(25 * Math.PI / 180);
@@ -14,15 +15,17 @@ function drop(radius, elevation, spin, theta = 0) {
   return { position: radial.map(v => radius * v), direction, spin };
 }
 
-test('all P2 camera/spin grid drops produce a causal probe or an explicit inner-camera refusal', () => {
-  const measurements = [];
-  for (const radius of [1.1, 2, 3, 6.9, 7.5, 12, 23, 60]) for (const elevation of [0, .23, .8, 1.45]) for (const spin of [0, .9, .998]) {
+test('every camera/spin grid drop has strictly increasing arrivals and a loss event', () => {
+  const measurements = [], gridStart = performance.now();
+  for (const spin of [0, .9, .998]) for (const elevation of [0, .23, .8, 1.45]) for (const radius of [KERR_RAY.minimumCamera, 1.1, 1.5, 2, 3, 5, 6.9, 7, 7.5, 12, 23, 60]) {
     const start = performance.now(), probe = createKerrProbe(drop(radius, elevation, spin));
     measurements.push({ radius, elevation, spin, ms: performance.now() - start, state: probe.state });
-    if (radius <= 7) {
-      assert.equal(probe.state, 'refused'); assert.match(probe.notice, /outside the release radius \(7 r_s\)/);
-    } else {
+    {
       assert.equal(probe.state, 'falling'); assert.ok(Number.isFinite(probe.lostTime) && probe.lostTime > 0);
+      const rows = packKerrProbe(probe).data.timeline;
+      assert.ok(rows.every((row, i) => !i || (row.t > rows[i - 1].t && row.arrival > rows[i - 1].arrival)), JSON.stringify({ radius, elevation, spin }));
+      assert.ok(rows.at(-1).signal <= .02, 'every fall has a solved loss event');
+      assert.ok(rows.some(row => row.signal < .25 && row.signal > .02), 'fading before loss');
       assert.ok(probe.flashEvents.every((e, i, rows) => !i || e.receptionTime > rows[i - 1].receptionTime));
       let previous = 0, fading = false;
       for (let i = 0; i <= 256; i++) {
@@ -34,7 +37,7 @@ test('all P2 camera/spin grid drops produce a causal probe or an explicit inner-
     }
   }
   mkdirSync(new URL('../tmp/', import.meta.url), { recursive: true });
-  writeFileSync(new URL('../tmp/kerr-probe-grid.json', import.meta.url), JSON.stringify(measurements, null, 2));
+  writeFileSync(new URL('../tmp/kerr-probe-grid.json', import.meta.url), JSON.stringify({ elapsedMs: performance.now() - gridStart, measurements }, null, 2));
 });
 
 test('real probe worker computes check-g off thread and returns a compact usable packet', async () => {
@@ -60,15 +63,11 @@ test('real probe worker computes check-g off thread and returns a compact usable
 });
 
 test('orbit-limit and near-release cameras support either elevation sign and rotated azimuth', () => {
-  for (const radius of [7.000001, 65]) for (const elevation of [-1.35, 1.35]) {
-    const probe = createKerrProbe(drop(radius, elevation, .998, .7));
+  for (const spin of [0, .9, .998]) for (const elevation of [-1.35, 1.35]) for (const radius of [KERR_RAY.minimumCamera, 3, 7, 7.000001, 65]) {
+    const probe = createKerrProbe(drop(radius, elevation, spin, .7));
     assert.equal(probe.state, 'falling');
     updateKerrProbe(probe, probe.lostTime);
     assert.equal(probe.state, 'lost');
-  }
-  for (const elevation of [-1.35, 0, .23, .8, 1.35]) {
-    const refused = createKerrProbe(drop(7, elevation, .998, .7));
-    assert.equal(refused.state, 'refused'); assert.match(refused.notice, /outside the release radius/);
   }
   assert.equal(probeDropRefusal(drop(7.000001, .23, .998).position, .998), null);
 });

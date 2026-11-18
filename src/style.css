@@ -328,3 +328,6 @@ input[type="range"]:hover::-webkit-slider-thumb { box-shadow: 0 0 0 5px #e9ad752
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; }
 }
+
+.metric-note { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.kerr-mode button:disabled, .kerr-mode input:disabled { opacity: .48; cursor: not-allowed; }

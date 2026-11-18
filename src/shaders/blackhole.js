@@ -1,4 +1,5 @@
 import { GEODESIC as G } from '../geodesic.js';
+import { KERR_RAY as K, kerrFlowGLSL } from '../kerrray.js';
 
 // All radii are measured in Schwarzschild radii. No textures are sampled.
 export const vertexShader = /* glsl */ `
@@ -658,6 +659,121 @@ export const fragmentShader = /* glsl */ `
     bool ringSide = observerRadius >= photonSphere ? mu >= 0.0 : mu <= 0.0;
     if (ringSide) light += blackbody(uTemperature * ringShift) * photonRing * pow(ringDoppler, 3.0) * 0.19
       * transmittance * transmittance * smoothstep(0.5, 0.9, uLensing) * uDiskIntensity * uLayers.z;
+    gl_FragColor = vec4(light * vignette, 1.0);
+  }
+`;
+
+// Reuse only procedural display helpers; the default export above is immutable.
+export const kerrFragmentShader = fragmentShader.slice(0, fragmentShader.indexOf('  vec3 diskEmission('))
+  + fragmentShader.slice(fragmentShader.indexOf('  vec3 observedSky('), fragmentShader.indexOf('  // Vacuum remainder'))
+  + fragmentShader.slice(fragmentShader.indexOf('  // Vacuum remainder'), fragmentShader.indexOf('  vec3 worldRadiance('))
+  + /* glsl */ `
+  uniform vec3 uKerrPosition;
+  uniform vec4 uKerrObserver;
+  uniform vec4 uKerrRadial;
+  uniform vec4 uKerrPolar;
+  uniform vec4 uKerrAzimuth;
+  uniform vec3 uKerrScenePolar;
+  uniform vec3 uKerrSceneAzimuth;
+  uniform float uKerrInner;
+
+  float kerrRadius(vec3 x, float a) {
+    float q = dot(x, x) - a * a;
+    return sqrt(0.5 * (q + sqrt(q * q + 4.0 * a * a * x.z * x.z)));
+  }
+  ${kerrFlowGLSL}
+
+  vec3 kerrTail(vec3 x, vec3 p, float pt, float a) {
+    float rho = length(x);
+    vec3 radial = x / rho;
+    float b = length(cross(x, p)) / abs(pt);
+    if (b < 1e-7) return radial;
+    vec3 velocity, force;
+    kerrFlow(x, p, pt, a, velocity, force);
+    vec3 tangent = normalize(velocity - dot(velocity, radial) * radial);
+    float angle = escapeAngle(1.0 / rho, b);
+    return normalize(radial * cos(angle) + tangent * sin(angle));
+  }
+
+  vec3 kerrDisk(vec3 x, vec3 p, float pt, float a, float pixel, vec3 velocity) {
+    float r = kerrRadius(x, a);
+    if (r < uKerrInner || r > 8.6) return vec3(0.0);
+    float omega = sqrt(0.5) / (pow(r, 1.5) + a * sqrt(0.5));
+    float ut = (pow(r, 1.5) + a * sqrt(0.5))
+      / (pow(r, 0.75) * sqrt(pow(r, 1.5) - 1.5 * sqrt(r) + 2.0 * a * sqrt(0.5)));
+    float lz = x.x * p.y - x.y * p.x;
+    // The local past-ray energy is one; g > 1 raises temperature and radiance.
+    float g = 1.0 / (ut * (pt + omega * lz));
+    float angle = atan(x.y, x.x);
+    vec3 ray = normalize(velocity);
+    float incidence = max(abs(ray.z), 0.001);
+    float footprint = pixel / max(abs(ray.z), 0.035);
+    float age = mod(uTime, 16.0);
+    float blend = 0.5 - 0.5 * cos(age * (2.0 * PI / 16.0));
+    // Sampling phi - Omega t advects the gas in the prograde velocity direction.
+    vec2 gas = mix(gasPattern(r, angle, -mod(uTime + 8.0, 16.0) * omega, ray.xy, incidence, pixel),
+      gasPattern(r, angle, -age * omega, ray.xy, incidence, pixel), blend);
+    float aa = max(footprint * 0.5, 0.003);
+    float edge = smoothstep(uKerrInner, uKerrInner + aa, r)
+      * (1.0 - smoothstep(7.1 - aa, 8.35 + aa, r));
+    float density = gas.y * mix(1.0, 0.12 + 1.8 * gas.x * gas.x, smoothstep(6.5, 8.3, r));
+    float radial = pow(uKerrInner / r, 2.35);
+    float rimWidth = max(0.13, footprint);
+    float hotEdge = exp(-pow((r - uKerrInner - 0.14) / rimWidth, 2.0)) * 0.24 * 0.13 / rimWidth;
+    float grazing = 1.0 + 0.32 * pow(1.0 - abs(ray.z), 3.0);
+    return blackbody(uTemperature * pow(uKerrInner / r, 0.62) * g)
+      * (radial * density + hotEdge) * edge * pow(g, 3.0) * grazing * 1.75 * uDiskIntensity;
+  }
+
+  void main() {
+    vec2 screen = (vUv * 2.0 - 1.0) + uScreenOffset * 2.0;
+    screen.x *= uResolution.x / uResolution.y;
+    vec3 initialRay = normalize(uCameraForward + tan(${G.halfFov}) * (screen.x * uCameraRight + screen.y * uCameraUp));
+    vec3 n = vec3(dot(initialRay, normalize(uCameraPosition)), dot(initialRay, uKerrScenePolar), dot(initialRay, uKerrSceneAzimuth));
+    vec4 momentum = -uKerrObserver + n.x * uKerrRadial + n.y * uKerrPolar + n.z * uKerrAzimuth;
+    vec3 x = uKerrPosition, p = momentum.yzw;
+    float pt = momentum.x, a = uSpin * 0.5;
+    float rp = 0.5 + sqrt(0.25 - a * a);
+    int limit = uQuality < 0.5 ? ${K.performanceSteps} : (uQuality < 1.5 ? ${K.balancedSteps} : ${K.highSteps});
+    float c = uQuality < 0.5 ? ${K.performanceC} : (uQuality < 1.5 ? ${K.balancedC} : ${K.highC});
+    float pixelAngle = ${2 * Math.tan(G.halfFov)} / uResolution.y;
+    vec3 light = vec3(0.0), outgoing = initialRay;
+    float transmittance = 1.0;
+    bool escaped = false;
+    int hits = 0;
+    for (int i = 0; i < ${K.highSteps}; i++) {
+      if (i >= limit) break;
+      float r = kerrRadius(x, a);
+      if (r < rp + ${K.epsilon}) break;
+      vec3 velocity, force;
+      kerrFlow(x, p, pt, a, velocity, force);
+      if (r > ${K.outerRadius.toFixed(1)} && dot(x, velocity) > 0.0) {
+        // KS (X,Y,Z) = scene (z,x,y), preserving the prograde orientation.
+        outgoing = kerrTail(x, p, pt, a).yzx;
+        escaped = true;
+        break;
+      }
+      vec3 previous = x, previousP = p;
+      float h = min(c * (r - rp), ${K.stepBound.toFixed(1)});
+      kerrStep(x, p, pt, a, h);
+      if (uLayers.x > 0.5 && previous.z * x.z < 0.0 && hits < 3) {
+        float t = previous.z / (previous.z - x.z);
+        vec3 crossing = mix(previous, x, t), crossingP = mix(previousP, p, t);
+        float radius = kerrRadius(crossing, a);
+        if (radius >= uKerrInner && radius <= 8.6) {
+          float pixel = pixelAngle * length(uCameraPosition) / sqrt(1.0 - 1.0 / length(uCameraPosition));
+          vec3 emission = kerrDisk(crossing, crossingP, pt, a, pixel, velocity);
+          light += emission * transmittance;
+          transmittance *= exp(-18.0 * length(emission));
+          hits++;
+        }
+      }
+    }
+    // Derivatives are evaluated after all lanes rejoin, including captured rays.
+    vec3 skyRay = normalize(outgoing);
+    vec3 background = observedSky(skyRay, dFdx(skyRay), dFdy(skyRay), pixelAngle, 1.0 / abs(pt));
+    if (escaped) light += background * transmittance;
+    float vignette = 1.0 - smoothstep(0.35, 1.9, length(vUv * 2.0 - 1.0)) * 0.18;
     gl_FragColor = vec4(light * vignette, 1.0);
   }
 `;

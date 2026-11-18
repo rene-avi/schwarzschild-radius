@@ -6,11 +6,13 @@ import { createUI } from './ui.js';
 import { QualityController } from './quality.js';
 import { allowsShortcut, shortcutForCode, shortcutNotice } from './shortcuts.js';
 import { spinFromDelta } from './kerr.js';
+import { KERR_RAY } from './kerrray.js';
 import { reset as resetLedger, advance as advanceLedger, travel as travelLedger } from './ledger.js';
 import { crewStep } from './mission.js';
 import { START_PHASES, advancePhases, drawnWorlds, retardedPosition } from './worldview.js';
 
 const canvas = document.querySelector('#universe');
+const metric = new URLSearchParams(window.location.search).get('metric') === 'kerr' ? 'kerr' : 'schwarzschild';
 const settings = { ...PRESETS.gargantua };
 function refreshVisualSpin() {
   settings.spin = Math.min(0.99, spinFromDelta(settings.spinDelta));
@@ -38,8 +40,14 @@ const events = new AbortController();
 const eventOptions = { signal: events.signal };
 
 const camera = new ObservatoryCamera(canvas, (mode) => ui?.setMode(mode));
+function setPictureLensing() {
+  camera.setLensing(metric === 'kerr' ? 1 : settings.lensing);
+  if (metric === 'kerr') camera.minimum = KERR_RAY.minimumCamera;
+}
+setPictureLensing();
 
 function action(type) {
+  if (metric === 'kerr' && ['probe', 'fly', 'cinematic'].includes(type)) return;
   switch (type) {
     case 'probe':
       {
@@ -92,13 +100,14 @@ function action(type) {
 }
 
 ui = createUI({
+  metric,
   presets: PRESETS,
   initialPreset: 'gargantua',
   onPreset(id) {
     if (!PRESETS[id]) return;
     Object.assign(settings, PRESETS[id]);
     refreshVisualSpin();
-    camera.setLensing(settings.lensing);
+    setPictureLensing();
     camera.setDisk(settings.tilt, settings.spin);
     camera.reset();
     probe = null;
@@ -108,7 +117,7 @@ ui = createUI({
   onChange(key, value) {
     if (key in settings && Number.isFinite(value)) settings[key] = value;
     if (key === 'spinDelta') refreshVisualSpin();
-    if (key === 'lensing') camera.setLensing(settings.lensing);
+    if (key === 'lensing') setPictureLensing();
     if (key === 'tilt' || key === 'spinDelta') camera.setDisk(settings.tilt, settings.spin);
   },
   onQuality(mode) { applyQuality(qualityController.setMode(mode)); },
@@ -133,7 +142,7 @@ function showFailure(message) {
 }
 
 try {
-  scene = new BlackHoleScene(canvas, settings);
+  scene = new BlackHoleScene(canvas, settings, metric);
 } catch (error) {
   console.error(error);
   showFailure('The observatory needs WebGL 2. Enable hardware acceleration in your browser and reload to begin.');
@@ -181,7 +190,7 @@ function animate(now) {
   simulationTime += simDt;
   worldPhases = advancePhases(worldPhases, simDt, settings.spinDelta);
   pictureWorlds = drawnWorlds(settings.spinDelta, settings.lensing).map(body => ({ ...body,
-    drawn: body.drawn && ui.missionOpen && worldsLayer,
+    drawn: metric !== 'kerr' && body.drawn && ui.missionOpen && worldsLayer,
     center: retardedPosition(body, worldPhases[body.id], camera.position.toArray(), settings.tilt).center,
   }));
   scene?.setWorlds(pictureWorlds);
@@ -235,7 +244,7 @@ const debug = new URLSearchParams(window.location.search).get('debug') === '1' ?
 // Debug mutation exists only behind the explicit flag; normal telemetry is copied.
 Object.defineProperty(window, 'eventHorizon', {
   configurable: true,
-  value: Object.freeze({ ...(debug ? { debug } : {}), getState: () => ({ settings: { ...settings }, camera: {
+  value: Object.freeze({ ...(debug ? { debug } : {}), getState: () => ({ metric, settings: { ...settings }, camera: {
     mode: camera.mode, radius: camera.radius, theta: camera.theta, elevation: camera.elevation,
     dilation: timeDilation(camera.radius, settings.lensing), gazeYaw: camera.gazeYaw, gazePitch: camera.gazePitch,
     shadowFraction: camera.shadowFraction,

@@ -354,6 +354,10 @@ test('invalid spin, positions, directions and horizon cameras explicitly raise R
     assert.throws(() => traceRay({ ...args, direction: v }), RangeError);
     assert.throws(() => observerFrame(v, 0.9), RangeError);
     assert.throws(() => blRadius(v, 0.9), RangeError);
+    const emitter = [6, 0.9, 1, 0, 1]; emitter[i === 1 ? 2 : i === 2 ? 3 : 0] = bad;
+    assert.throws(() => emitterShift(...emitter), RangeError);
+    assert.throws(() => emitterShift(6, 0.9, 1, 0, bad), RangeError);
+    assert.throws(() => criticalCurve(args.position, 0.9, bad), RangeError);
   }
   assert.throws(() => traceRay({ ...args, direction: [0, 0, 0] }), RangeError);
   for (const spin of [0, 0.5, 0.998]) for (const radius of [0, horizon(spin), horizon(spin) + KERR_RAY.epsilon]) {
@@ -377,4 +381,56 @@ test('write Kerr numerical evidence and measure the unchanged default weak-field
   const main = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.match(main, /get\('metric'\) === 'kerr'/);
   assert.match(main, /getState: \(\) => \(\{ metric,/);
+});
+
+test('past KS time has the inward and outward Schwarzschild closed forms', () => {
+  for (const [sign, target] of [[-1, 1.0006], [1, 80]]) {
+    const cam = 23;
+    let previous;
+    const ray = traceRay({ position: [0, 0, cam], direction: [sign, 0, 0], spin: 0, stepScale: 0.1,
+      onStep(state) {
+        assert.ok(state.t <= 0);
+        if (previous) assert.ok(state.t < previous.t);
+        previous = state;
+      }, onChord(a, b) {
+        const r0 = blRadius(a.x, 0), r1 = blRadius(b.x, 0);
+        if ((r0 - target) * (r1 - target) > 0) return null;
+        const f = (target - r0) / (r1 - r0);
+        return { delay: -b.t, radius: r1 };
+      } });
+    assert.equal(ray.fate, 'hit');
+    const r = ray.hit.radius;
+    const expected = sign < 0 ? cam - r : r - cam + 2 * Math.log((r - 1) / (cam - 1));
+    close(ray.hit.delay, expected, 1e-8, 'KS radial delay');
+  }
+  const far = traceRay({ position: [0, 0, 100000], direction: [1, 0, 0], spin: 0, outerRadius: 200000,
+    onChord(a, b) { if (b.x[0] >= 100100) return { delay: -b.t, dr: b.x[0] - 100000 }; } });
+  close(far.hit.delay / far.hit.dr, 1, 2.1e-5, 'far-field dt/dr');
+});
+
+test('actual GLSL KS time and its RK4 accumulation agree with JS ray states', () => {
+  const body = functionBody(kerrFragmentShader, 'kerrTime');
+  const step = functionBody(kerrFragmentShader, 'kerrStep');
+  const main = functionBody(kerrFragmentShader, 'main');
+  assert.match(main, /kerrStep\(x, p, rayTime, pt, a, h\)/);
+  const accumulation = step.match(/time \+= ([^;]+);/);
+  assert.ok(accumulation, 'time accumulates with the RK4 step');
+  for (const spin of [0, 0.9, 0.998]) {
+    const states = [];
+    traceRay({ position: at(60), direction: [-1, .1, .2], spin, maxSteps: 2, onStep: s => states.push(s) });
+    const flow = functionBody(kerrFragmentShader, 'kerrFlow');
+    const derivative = state => {
+      const env = { ...state, a: spin / 2 };
+      for (const name of ['q', 'r', 'l', 'f']) env[name] = evaluate(assignment(body, name), env);
+      const dt = evaluate(lastReturn(body), env);
+      for (const row of flow.matchAll(/float (\w+) = ([^;]+);/g)) env[row[1]] = evaluate(row[2], env);
+      return { dt, dx: evaluate(assignment(flow, 'dx'), env), dp: evaluate(assignment(flow, 'dp'), env) };
+    };
+    const s = states[0], h = Math.min(KERR_RAY.highC * (blRadius(s.x, spin) - horizon(spin)), 8);
+    const advance = (d, h) => ({ x: s.x.map((v, i) => v + d.dx[i] * h), p: s.p.map((v, i) => v + d.dp[i] * h), pt: s.pt });
+    const d1 = derivative(s), d2 = derivative(advance(d1, h / 2)), d3 = derivative(advance(d2, h / 2)), d4 = derivative(advance(d3, h));
+    const dt = evaluate(accumulation[1], { h, t1: d1.dt, t2: d2.dt, t3: d3.dt, t4: d4.dt });
+    close(states[1].t - s.t, dt, 1e-12, 'shader RK4 coordinate time');
+    assert.ok(dt < 0);
+  }
 });

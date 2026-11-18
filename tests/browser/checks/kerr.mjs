@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import { pixels, afterRender, settledExposure, quantile } from '../pixels.mjs';
 import { criticalCurve, curveRadius, traceRay } from '../../../src/kerrray.js';
 import { GEODESIC } from '../../../src/geodesic.js';
+import { worldImage, traceWorld, directEventImage } from '../../../src/kerrworlds.js';
+import { integrateProbe, historyAt, probeImage } from '../../../src/kerrprobe.js';
+import { screenPoint } from '../../../src/worldview.js';
 
 const viewport = { width: 900, height: 900 };
 const layers = { disk: false, sky: true, ring: false, probe: false, worlds: false };
@@ -111,6 +114,62 @@ async function time(page, seconds) {
   await settledExposure(page);
 }
 
+const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
+function geometry(elevation = 0.23) {
+  const radial = [0, Math.sin(elevation), Math.cos(elevation)];
+  return { position: radial.map(v => v * 23), radial,
+    forward: radial.map(v => -v), right: [1, 0, 0], up: [0, Math.cos(elevation), -Math.sin(elevation)],
+    polar: [0, -Math.cos(elevation), Math.sin(elevation)], azimuth: [1, 0, 0] };
+}
+function pixelRay(x, y, basis) {
+  const sx = (x - centre) / scale, sy = (centre - y) / scale;
+  const d = basis.forward.map((v, i) => v + sx * basis.right[i] + sy * basis.up[i]);
+  return [dot(d, basis.radial), dot(d, basis.polar), dot(d, basis.azimuth)];
+}
+function inPolygon(x, y, polygon) {
+  let inside = false;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+    if ((a.y > y) !== (b.y > y) && x < a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y)) inside = !inside;
+  }
+  return inside;
+}
+function edgeDistance(x, y, polygon) {
+  return Math.min(...polygon.map((a, i) => {
+    const b = polygon[(i + 1) % polygon.length], dx = b.x - a.x, dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / (dx * dx + dy * dy)));
+    return Math.hypot(x - a.x - t * dx, y - a.y - t * dy);
+  }));
+}
+function differencePixels(on, off, bounds) {
+  const result = [];
+  for (let y = Math.max(0, Math.floor(bounds.minY)); y <= Math.min(899, Math.ceil(bounds.maxY)); y++) {
+    for (let x = Math.max(0, Math.floor(bounds.minX)); x <= Math.min(899, Math.ceil(bounds.maxX)); x++) {
+      if (Math.max(...on.rgb(x, y).map((v, i) => Math.abs(v - off.rgb(x, y)[i]))) > 2) result.push({ x, y });
+    }
+  }
+  return result;
+}
+async function deep(page) {
+  await page.locator('[data-preset="deep"]').click();
+  await page.waitForFunction(() => window.eventHorizon.getState().settings.spinDelta === 1.3e-14);
+  await page.locator('[data-quality="high"]').click();
+  await page.waitForFunction(() => window.eventHorizon.getState().qualityMode === 'high' && window.eventHorizon.getState().renderScale === 1);
+  await afterRender(page, { paused: true, camera: { ...camera, elevation: .23 }, layers: { ...layers, disk: true, sky: true } });
+}
+async function hide(page) {
+  if (!await page.evaluate(() => document.body.classList.contains('hud-hidden'))) await page.keyboard.press('KeyH');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#hud')).opacity === '0');
+}
+async function advanceProbe(page, dt) {
+  const before = await page.evaluate(dt => {
+    const before = window.eventHorizon.getState().renderedFrames;
+    window.eventHorizon.debug.advanceProbe(dt);
+    return before;
+  }, dt);
+  await page.waitForFunction(before => window.eventHorizon.getState().renderedFrames > before + 1, before);
+}
+
 export const checks = [
   {
     name: 'kerr software-compatible startup smoke', path: '/?metric=kerr', viewport: { width: 320, height: 240 },
@@ -214,7 +273,7 @@ export const checks = [
     name: 'kerr scoped controls finite exposure and all quality frames', gpu: true, path: '/?metric=kerr&debug=1', viewport,
     async run({ page, outDir, audit }) {
       await page.waitForFunction(() => document.querySelector('.top-center').textContent.includes('KERR METRIC'));
-      for (const action of ['fly', 'cinematic', 'probe']) {
+      for (const action of ['fly', 'cinematic']) {
         assert.equal(await page.locator(`[data-action="${action}"]`).isDisabled(), true);
         assert.match(await page.locator(`[data-action="${action}"]`).getAttribute('title'), /Schwarzschild/);
       }
@@ -239,9 +298,10 @@ export const checks = [
       await page.locator('[data-action="mission"]').click();
       await page.waitForFunction(() => {
         const s = window.eventHorizon.getState();
-        return s.mission.open && s.worlds.length > 0 && s.worlds.every(v => !v.drawn);
+        return s.mission.open && s.worlds.length === 2 && s.worlds.every(v => v.drawn);
       });
-      await page.keyboard.press('KeyF'); await page.keyboard.press('KeyC'); await page.keyboard.press('KeyP');
+      await page.keyboard.press('KeyF'); await page.keyboard.press('KeyC');
+      assert.equal(await page.locator('[data-action="probe"]').isDisabled(), false);
       await afterRender(page, { camera: { radius: 0.6 } });
       assert.equal(await page.evaluate(() => window.eventHorizon.getState().camera.radius), 1.1);
       assert.equal(await page.evaluate(() => window.eventHorizon.getState().camera.mode), 'orbit');
@@ -270,6 +330,125 @@ export const checks = [
       }
       assert.deepEqual(audit.consoleErrors, []);
       await json(outDir, 'quality', rows);
+    },
+  },
+  {
+    name: 'kerr Deep mission worlds match moving-ray silhouettes and preserve exposure', gpu: true, path: '/?metric=kerr&debug=1', viewport,
+    async run({ page, outDir, audit }) {
+      await deep(page);
+      await page.keyboard.press('KeyM');
+      await page.waitForFunction(() => window.eventHorizon.getState().mission.open);
+      const phases = { lantern: -.22507512341471048, farShore: 1.84 };
+      const before = await page.evaluate(phases => {
+        const before = window.eventHorizon.getState().renderedFrames;
+        window.eventHorizon.debug.setWorldPhases(phases);
+        return before;
+      }, phases);
+      await page.waitForFunction(before => {
+        const s = window.eventHorizon.getState();
+        return s.renderedFrames > before + 1 && s.worlds.every(w => w.phase === (w.id === 'lantern' ? -.22507512341471048 : 1.84));
+      }, before);
+      await hide(page);
+      await afterRender(page, { layers: { worlds: false } }); await settledExposure(page);
+      const off = await frame(page, outDir, 'worlds-off'), offExposure = await page.evaluate(() => window.eventHorizon.getState().exposure);
+      await afterRender(page, { layers: { worlds: true } }); await settledExposure(page);
+      const on = await frame(page, outDir, 'worlds-on'), state = await page.evaluate(() => window.eventHorizon.getState());
+      assert.ok(state.worlds.every(w => w.drawn)); assert.equal(state.worlds.some(w => w.id === 'brink'), false);
+      assert.ok(Math.abs(state.exposure / offExposure - 1) <= .01);
+      const basis = geometry(), rows = [];
+      for (const world of state.worlds) {
+        const options = { position: basis.position, spin: .998, radius: world.orbitRadius, phase: world.phase, stepScale: .1 };
+        const image = worldImage(options), point = screenPoint(image.sceneDirection, basis, 900, 900), polygon = [];
+        assert.ok(point && point.x > 20 && point.x < 880 && point.y > 20 && point.y < 880);
+        for (let j = 0; j < 32; j++) {
+          const angle = j * Math.PI / 16, dx = Math.cos(angle), dy = Math.sin(angle);
+          let lo = 0, hi = 24;
+          for (let k = 0; k < 15; k++) {
+            const r = (lo + hi) / 2;
+            const hit = traceWorld({ ...options, bodyRadius: world.radius,
+              direction: pixelRay(point.x + r * dx, point.y + r * dy, basis) }).fate === 'hit';
+            if (hit) lo = r; else hi = r;
+          }
+          polygon.push({ x: point.x + (lo + hi) / 2 * dx, y: point.y + (lo + hi) / 2 * dy });
+        }
+        const bounds = { minX: Math.min(...polygon.map(p => p.x)) - 4, maxX: Math.max(...polygon.map(p => p.x)) + 4,
+          minY: Math.min(...polygon.map(p => p.y)) - 4, maxY: Math.max(...polygon.map(p => p.y)) + 4 };
+        const changed = differencePixels(on, off, bounds), marked = new Set(changed.map(p => p.y * 900 + p.x));
+        assert.ok(changed.length > 5, `${world.id} has a silhouette`);
+        const edge = changed.filter(p => [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy]) => !marked.has((p.y+dy)*900+p.x+dx)));
+        const errors = edge.map(p => edgeDistance(p.x,p.y,polygon));
+        assert.ok(errors.every(e => e <= 3), `${world.id} limb error ${Math.max(...errors)} px`);
+        for (const p of polygon) assert.ok(edge.some(q => Math.hypot(q.x-p.x,q.y-p.y)<=3), `${world.id} missing limb`);
+        const interior = changed.filter(p => inPolygon(p.x,p.y,polygon));
+        assert.ok(interior.length > 3);
+        rows.push({ id: world.id, point, polygon, changed: changed.length, maximumLimbError: Math.max(...errors) });
+      }
+      assert.deepEqual(audit.consoleErrors, []);
+      await json(outDir, 'world-silhouettes', { rows, offExposure, onExposure: state.exposure });
+    },
+  },
+  {
+    name: 'kerr probe follows retarded geodesic reddens stretches pulses and is lost', gpu: true, path: '/?metric=kerr&debug=1', viewport,
+    async run({ page, outDir, audit }) {
+      await deep(page);
+      await afterRender(page, { layers: { disk: false, sky: false, probe: true, worlds: false } });
+      await page.locator('[data-action="probe"]').click();
+      await page.waitForFunction(() => window.eventHorizon.getState().probe?.metric === 'kerr', null, { timeout: 120000 });
+      await hide(page);
+      const basis = geometry(), c = Math.cos(25*Math.PI/180), s = Math.sin(25*Math.PI/180);
+      const direction = basis.radial.map((v,i) => v*c+basis.right[i]*s);
+      const history = integrateProbe({ direction, spin: .998 }), rows = [];
+      let elapsed = 0;
+      for (const target of [0, 20, 36]) {
+        await advanceProbe(page, target-elapsed); elapsed = target;
+        await settledExposure(page);
+        const state = await page.evaluate(() => window.eventHorizon.getState()), now = state.probe.arrivalDelay + state.probe.elapsed;
+        const image = directEventImage({ position: basis.position, spin: .998,
+          eventAt: t => historyAt(history, Math.max(0, Math.min(history.at(-1).t, now+t))) });
+        const point = screenPoint(image.sceneDirection,basis,900,900);
+        assert.ok(point);
+        const on = await frame(page,outDir,`probe-t${target}`);
+        await afterRender(page,{layers:{probe:false}}); const off = await frame(page,outDir,`probe-off-t${target}`);
+        await afterRender(page,{layers:{probe:true}});
+        const bounds = {minX:point.x-15,maxX:point.x+15,minY:point.y-15,maxY:point.y+15};
+        const changed = differencePixels(on,off,bounds); assert.ok(changed.length>0,`probe hull visible at ${target}`);
+        const centreX=(Math.min(...changed.map(p=>p.x))+Math.max(...changed.map(p=>p.x)))/2;
+        const centreY=(Math.min(...changed.map(p=>p.y))+Math.max(...changed.map(p=>p.y)))/2;
+        assert.ok(Math.hypot(centreX-point.x,centreY-point.y)<=3,`probe image at ${target}: ${centreX},${centreY} vs ${JSON.stringify(point)}`);
+        const rgb=changed.reduce((sum,p)=>sum.map((v,i)=>v+on.rgb(p.x,p.y)[i]),[0,0,0]).map(v=>v/changed.length);
+        rows.push({ target,point,centreX,centreY,rgb,signal:state.probe.signal });
+      }
+      assert.ok(rows[2].rgb[2]/rows[2].rgb[0] < rows[0].rgb[2]/rows[0].rgb[0]);
+      const state=await page.evaluate(()=>window.eventHorizon.getState()), flashes=state.probe.flashEvents;
+      const gaps=flashes.slice(1).map((e,i)=>e.receptionTime-flashes[i].receptionTime);
+      assert.ok(gaps.at(-1)>2*gaps[0]);
+      // Trace the onboard emission events independently of the browser reception table.
+      const release = probeImage(basis.position,.998,history[0]);
+      let seed = release.direction;
+      const independentFlashes = [];
+      for (const tau of [27,28]) {
+        let low=0, high=history.length-1;
+        while(high-low>1){const mid=(low+high)>>1;if(history[mid].tau<=tau)low=mid;else high=mid;}
+        const a=history[low],b=history[high],t=a.t+(tau-a.tau)/(b.tau-a.tau)*(b.t-a.t);
+        const event=historyAt(history,t),image=probeImage(basis.position,.998,event,seed);
+        seed=image.direction;
+        const target=t+image.delay-release.delay;
+        independentFlashes.push({tau,receptionTime:target});
+        assert.ok(Math.abs(target-flashes[tau-1].receptionTime)<1e-6);
+        await advanceProbe(page,target-elapsed+1e-4);elapsed=target+1e-4;
+        await page.waitForFunction(n=>window.eventHorizon.getState().probe.flashCount===n,tau);
+        const p=await page.evaluate(()=>window.eventHorizon.getState().probe);
+        assert.ok(p.pulse>.95,`onboard flash at received time ${target}`);
+        await frame(page,outDir,`probe-flash-${tau}`);
+      }
+      await advanceProbe(page,state.probe.lostTime-elapsed+1);
+      await page.waitForFunction(()=>window.eventHorizon.getState().probe.state==='lost'
+        && document.querySelector('[data-readout="probeState"]').textContent==='SIGNAL LOST');
+      const lost=await frame(page,outDir,'probe-lost');
+      await afterRender(page,{layers:{probe:false}});const off=await frame(page,outDir,'probe-lost-off');
+      assert.equal(differencePixels(lost,off,{minX:0,maxX:899,minY:0,maxY:899}).length,0);
+      assert.deepEqual(audit.consoleErrors,[]);
+      await json(outDir,'probe-history',{rows,gaps,flashes,independentFlashes,lost:await page.evaluate(()=>window.eventHorizon.getState().probe)});
     },
   },
 ];

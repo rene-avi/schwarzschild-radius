@@ -6,7 +6,9 @@ import { createUI } from './ui.js';
 import { QualityController } from './quality.js';
 import { allowsShortcut, shortcutForCode, shortcutNotice } from './shortcuts.js';
 import { spinFromDelta } from './kerr.js';
-import { KERR_RAY, zamoClockRate } from './kerrray.js';
+import { KERR_RAY, zamoClockRate, pictureSpin } from './kerrray.js';
+import { worldEvent, worldImage, photonOrbit } from './kerrworlds.js';
+import { createKerrProbe, updateKerrProbe } from './kerrprobe.js';
 import { reset as resetLedger, advance as advanceLedger, travel as travelLedger } from './ledger.js';
 import { crewStep } from './mission.js';
 import { START_PHASES, advancePhases, drawnWorlds, retardedPosition } from './worldview.js';
@@ -52,18 +54,35 @@ function referenceDilation() {
     : timeDilation(camera.radius, settings.lensing);
 }
 
+const kerrWorldImages = new Map();
+function pictureWorldState({ id, drawn, center, radius, phase, radiusM }) {
+  if (metric !== 'kerr') return { id, drawn, center: [...center], radius };
+  const spin = pictureSpin(settings.spinDelta), position = camera.position.toArray();
+  const key = JSON.stringify([phase, position, spin]);
+  let cached = kerrWorldImages.get(id);
+  if (cached?.key !== key) {
+    let image;
+    try { image = worldImage({ radius: radiusM / 2, phase, position, spin }); } catch { /* Occulted direct images have no centre. */ }
+    cached = { key, image }; kerrWorldImages.set(id, cached);
+  }
+  const image = cached.image;
+  return { id, drawn, radius, phase, orbitRadius: radiusM / 2, center: image ? [image.x[1], image.x[2], image.x[0]] : null,
+    direction: image ? [...image.sceneDirection] : undefined, delay: image?.delay };
+}
+
 function action(type) {
-  if (metric === 'kerr' && ['probe', 'fly', 'cinematic'].includes(type)) return;
+  if (metric === 'kerr' && ['fly', 'cinematic'].includes(type)) return;
   switch (type) {
     case 'probe':
       {
-        const tilt = settings.tilt * Math.PI / 180;
+        const tilt = metric === 'kerr' ? 0 : settings.tilt * Math.PI / 180;
         const normal = [0, Math.cos(tilt), -Math.sin(tilt)];
         const radial = camera.position.clone().normalize().multiplyScalar(Math.cos(25 * Math.PI / 180));
         radial.addScaledVector(camera.right, Math.sin(25 * Math.PI / 180));
         const clearance = Math.max(0, 0.18 - radial.toArray().reduce((sum, v, i) => sum + v * normal[i], 0));
         const direction = radial.toArray().map((value, i) => value + clearance * normal[i]);
-        probe = createProbe({ observerRadius: Math.max(7, camera.radius), direction });
+        probe = metric === 'kerr' ? createKerrProbe({ position: camera.position.toArray(), direction, spin: pictureSpin(settings.spinDelta) })
+          : createProbe({ observerRadius: Math.max(7, camera.radius), direction });
       }
       ui.setNotice('Watch the beacon: one flash per second of its own time.');
       break;
@@ -122,7 +141,7 @@ ui = createUI({
   },
   onChange(key, value) {
     if (key in settings && Number.isFinite(value)) settings[key] = value;
-    if (key === 'spinDelta') refreshVisualSpin();
+    if (key === 'spinDelta') { refreshVisualSpin(); if (metric === 'kerr') probe = null; }
     if (key === 'lensing') setPictureLensing();
     if (key === 'tilt' || key === 'spinDelta') camera.setDisk(settings.tilt, settings.spin);
   },
@@ -194,16 +213,18 @@ function animate(now) {
     }
   }
   simulationTime += simDt;
-  worldPhases = advancePhases(worldPhases, simDt, settings.spinDelta);
+  worldPhases = advancePhases(worldPhases, simDt, metric === 'kerr' ? Math.max(settings.spinDelta, 0.002) : settings.spinDelta);
   pictureWorlds = drawnWorlds(settings.spinDelta, settings.lensing).map(body => ({ ...body,
-    drawn: metric !== 'kerr' && body.drawn && ui.missionOpen && worldsLayer,
-    center: retardedPosition(body, worldPhases[body.id], camera.position.toArray(), settings.tilt).center,
+    phase: worldPhases[body.id],
+    drawn: (metric === 'kerr' ? body.radiusM / 2 >= 1.2 * photonOrbit(pictureSpin(settings.spinDelta)) : body.drawn) && ui.missionOpen && worldsLayer,
+    center: metric === 'kerr' ? worldEvent(body.radiusM / 2, worldPhases[body.id], 0, pictureSpin(settings.spinDelta)).x.map((_, i, x) => x[(i + 1) % 3])
+      : retardedPosition(body, worldPhases[body.id], camera.position.toArray(), settings.tilt).center,
   }));
   scene?.setWorlds(pictureWorlds);
   clock += simDt * dilation;
   const crewSeconds = crewStep(dt, settings.timeScale, missionRunning, paused);
   if (crewSeconds > 0) ledger = advanceLedger(ledger, crewSeconds, settings.spinDelta);
-  if (probe) updateProbe(probe, paused ? 0 : dt, settings.timeScale);
+  if (probe) (metric === 'kerr' ? updateKerrProbe : updateProbe)(probe, paused ? 0 : dt, settings.timeScale);
 
   const qualityDecision = qualityPinned ? null : qualityController.feed(rawDt);
   fps = qualityController.fps;
@@ -243,7 +264,7 @@ const debug = new URLSearchParams(window.location.search).get('debug') === '1' ?
     for (const id of ['lantern', 'farShore']) if (Number.isFinite(values[id])) worldPhases[id] = values[id];
   },
   setSimulationTime(seconds) { if (Number.isFinite(seconds)) simulationTime = seconds; },
-  advanceProbe(dt) { if (probe) updateProbe(probe, dt, settings.timeScale); },
+  advanceProbe(dt) { if (probe) (metric === 'kerr' ? updateKerrProbe : updateProbe)(probe, dt, settings.timeScale); },
   advanceCrew(seconds) { ledger = advanceLedger(ledger, seconds, settings.spinDelta); },
   travel(location) { ledger = travelLedger(ledger, location); },
 }) : null;
@@ -259,8 +280,9 @@ Object.defineProperty(window, 'eventHorizon', {
     location: ledger.location, homeSeconds: ledger.homeSeconds, crewSeconds: ledger.crewSeconds,
     bodySeconds: { ...ledger.bodySeconds },
   }, mission: { open: ui.missionOpen, running: missionRunning },
-  worlds: pictureWorlds.map(({ id, drawn, center, radius }) => ({ id, drawn, center: [...center], radius })),
-  probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })) } : null, paused, clock, simulationTime, fps, renderedFrames,
+  worlds: pictureWorlds.map(pictureWorldState),
+  probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })),
+    ...(metric === 'kerr' ? { position: [...probe.position], flashEvents: probe.flashEvents.map(event => ({ ...event })) } : {}) } : null, paused, clock, simulationTime, fps, renderedFrames,
   exposure: scene?.meter.exposure,
   quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),
 });

@@ -111,14 +111,14 @@ function makeFlow() {
     const df = mul(f, sub(div(mul(3, d), r), div(add(mul(mul(4, mul(r2, r)), d), mul(mul(2, a2), mul(x[2], Number(axis === 2)))), den)));
     return add(mul(mul(0.5, df), sq(lp)), mul(mul(f, lp), sum(dl.map((v, i) => mul(v, p[i])))));
   });
-  return { dx, dp };
+  return { dx, dp, dt: add(sub(0, 'pt'), mul(f, lp)) };
 }
 const outputs = makeFlow();
 const expression = (row, ref = v => v) => row.kind === 'sqrt' ? `sqrt(${ref(row.a)})` : `${ref(row.a)} ${row.kind} ${ref(row.b)}`;
 const jsSource = rounded => {
   const ref = v => String(v);
   const rows = graph.map(row => `const ${row.id} = ${rounded ? `F(${expression(row, ref)})` : expression(row, ref)};`).join('\n');
-  return `const sqrt = ${rounded ? 'v => F(Math.sqrt(v))' : 'Math.sqrt'};\n${rows}\nreturn {dx:[${outputs.dx}],dp:[${outputs.dp}]};`;
+  return `const sqrt = ${rounded ? 'v => F(Math.sqrt(v))' : 'Math.sqrt'};\n${rows}\nreturn {dx:[${outputs.dx}],dp:[${outputs.dp}],dt:${outputs.dt}};`;
 };
 let flow64, flow32;
 const named = v => ({ x: v[0], y: v[1], z: v[2] });
@@ -137,7 +137,32 @@ function rkStep(state, a, h, f32) {
   const d1 = flow(state, a, f32), half = F(h * 0.5);
   const d2 = flow(stage(d1, half), a, f32), d3 = flow(stage(d2, half), a, f32), d4 = flow(stage(d3, h), a, f32);
   const finish = (v, key) => v.map((t, i) => F(t + F(F(h / 6) * F(F(F(d1[key][i] + F(2 * d2[key][i])) + F(2 * d3[key][i])) + d4[key][i]))));
-  return { x: finish(state.x, 'dx'), p: finish(state.p, 'dp'), pt: state.pt };
+  const t = F((state.t ?? 0) + F(F(h / 6) * F(F(F(d1.dt + F(2 * d2.dt)) + F(2 * d3.dt)) + d4.dt)));
+  return { x: finish(state.x, 'dx'), p: finish(state.p, 'dp'), pt: state.pt, t };
+}
+
+export function kerrVelocity(state, spin) {
+  vector(state.x); vector(state.p);
+  if (!Number.isFinite(state.pt)) throw new RangeError('Momentum must be finite.');
+  const d = flow(state, spinValue(spin), false);
+  return [d.dt, ...d.dx];
+}
+
+export function kerrStep(state, spin, h) {
+  kerrVelocity(state, spin);
+  if (!Number.isFinite(h) || !Number.isFinite(state.t) || h <= 0) throw new RangeError('Invalid Hamiltonian step.');
+  return rkStep(state, spinValue(spin), h, false);
+}
+
+export function metricProduct(x, spin, u, v) {
+  vector(x);
+  if (![u, v].every(w => Array.isArray(w) && w.length === 4 && w.every(Number.isFinite))) throw new RangeError('Expected finite four-vectors.');
+  return geometry(x, spinValue(spin)).inner(u, v);
+}
+
+export function lowerVector(x, spin, u) {
+  metricProduct(x, spin, u, u);
+  return geometry(x, spinValue(spin)).lower(u);
 }
 
 export const kerrFlowGLSL = `
@@ -145,13 +170,25 @@ void kerrFlow(vec3 x, vec3 p, float pt, float a, out vec3 dx, out vec3 dp) {
 ${graph.map(row => `  float ${row.id} = ${expression(row, v => typeof v === 'number' ? v.toFixed(1) : v)};`).join('\n')}
   dx = vec3(${outputs.dx}); dp = vec3(${outputs.dp});
 }
-void kerrStep(inout vec3 x, inout vec3 p, float pt, float a, float h) {
+float kerrTime(vec3 x, vec3 p, float pt, float a) {
+  float q = dot(x, x) - a * a;
+  float r = sqrt(0.5 * (q + sqrt(q * q + 4.0 * a * a * x.z * x.z)));
+  vec3 l = -vec3(r * x.x - a * x.y, r * x.y + a * x.x, x.z * (r * r + a * a) / r) / (r * r + a * a);
+  float f = r * r * r / (pow(r, 4.0) + a * a * x.z * x.z);
+  return -pt + f * (dot(l, p) - pt);
+}
+void kerrStep(inout vec3 x, inout vec3 p, inout float time, float pt, float a, float h) {
   vec3 x1, p1, x2, p2, x3, p3, x4, p4;
   kerrFlow(x, p, pt, a, x1, p1);
   float halfStep = h * 0.5;
   kerrFlow(x + x1 * halfStep, p + p1 * halfStep, pt, a, x2, p2);
   kerrFlow(x + x2 * halfStep, p + p2 * halfStep, pt, a, x3, p3);
   kerrFlow(x + x3 * h, p + p3 * h, pt, a, x4, p4);
+  float t1 = kerrTime(x, p, pt, a);
+  float t2 = kerrTime(x + x1 * halfStep, p + p1 * halfStep, pt, a);
+  float t3 = kerrTime(x + x2 * halfStep, p + p2 * halfStep, pt, a);
+  float t4 = kerrTime(x + x3 * h, p + p3 * h, pt, a);
+  time += (h / 6.0) * (((t1 + 2.0 * t2) + 2.0 * t3) + t4);
   x += (h / 6.0) * (((x1 + 2.0 * x2) + 2.0 * x3) + x4);
   p += (h / 6.0) * (((p1 + 2.0 * p2) + 2.0 * p3) + p4);
 }
@@ -171,6 +208,7 @@ export function invariants(state, spin) {
 
 export function emitterShift(r, spin, pt, Lz, observerProduct = 1) {
   const a = spinValue(spin), rootM = Math.sqrt(0.5);
+  if (![r, pt, Lz, observerProduct].every(Number.isFinite) || r <= horizon(spin)) throw new RangeError('Invalid circular emitter.');
   const omega = rootM / (r ** 1.5 + a * rootM);
   const ut = (r ** 1.5 + a * rootM) / (r ** 0.75 * Math.sqrt(r ** 1.5 - 1.5 * Math.sqrt(r) + 2 * a * rootM));
   return observerProduct / (ut * (pt + omega * Lz));
@@ -188,7 +226,7 @@ function farTail(state, a) {
 
 /** Past-directed rays, p_t fixed; onStep sees the actual states, including float32 rounding. */
 export function traceRay({ position, direction, spin, quality = 'high', stepScale = 1, float32 = false,
-  outerRadius = KERR_RAY.outerRadius, maxSteps, onStep } = {}) {
+  outerRadius = KERR_RAY.outerRadius, maxSteps, onStep, onChord } = {}) {
   vector(direction);
   if (!(Math.hypot(...direction) > 0)) throw new RangeError('Ray direction must be nonzero.');
   const frame = observerFrame(position, spin), a = spinValue(spin), surface = horizon(spin) + KERR_RAY.epsilon;
@@ -199,7 +237,7 @@ export function traceRay({ position, direction, spin, quality = 'high', stepScal
   const n = norm(direction), cov = frame.covectors;
   const p = cov[0].map((v, i) => -v + n[0] * cov[1][i] + n[1] * cov[2][i] + n[2] * cov[3][i]);
   const F = float32 ? Math.fround : v => v;
-  let state = { x: frame.position.map(F), p: p.slice(1).map(F), pt: F(p[0]) };
+  let state = { x: frame.position.map(F), p: p.slice(1).map(F), pt: F(p[0]), t: 0 };
   const diskHits = [], inner = diskInnerRadius(spin), maximum = maxSteps
     ?? Math.ceil(budget / stepScale + Math.max(0, outerRadius - KERR_RAY.outerRadius) / (KERR_RAY.stepBound * stepScale));
   onStep?.(state);
@@ -212,6 +250,8 @@ export function traceRay({ position, direction, spin, quality = 'high', stepScal
     }
     const h = F(stepScale * Math.min(c * (r - horizon(spin)), KERR_RAY.stepBound));
     const next = rkStep(state, F(a), h, float32);
+    const hit = onChord?.(state, next);
+    if (hit) return { fate: 'hit', hit, diskHits, steps: i + 1, state: next };
     if (state.x[2] * next.x[2] < 0 && diskHits.length < 3) {
       const t = state.x[2] / (state.x[2] - next.x[2]);
       const x = state.x.map((v, j) => v + t * (next.x[j] - v));
@@ -230,7 +270,7 @@ export function traceRay({ position, direction, spin, quality = 'high', stepScal
 export function criticalCurve(position, spin, samples = 4096) {
   const frame = observerFrame(position, spin), a = spinValue(spin), ro = Math.hypot(...position);
   const ct = position[1] / ro, st = Math.sqrt(1 - ct * ct);
-  if (!(a > 0) || st < 1e-8) throw new RangeError('Critical-curve sampling requires nonzero spin and an off-axis observer.');
+  if (!(a > 0) || st < 1e-8 || !Number.isSafeInteger(samples) || samples < 4) throw new RangeError('Critical-curve sampling requires finite samples, nonzero spin and an off-axis observer.');
   const sigma = ro * ro + a * a * ct * ct;
   const gphi = st * st * (ro * ro + a * a + ro * a * a * st * st / sigma);
   const points = [];

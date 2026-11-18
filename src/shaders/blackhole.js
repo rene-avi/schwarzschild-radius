@@ -676,12 +676,97 @@ export const kerrFragmentShader = fragmentShader.slice(0, fragmentShader.indexOf
   uniform vec3 uKerrScenePolar;
   uniform vec3 uKerrSceneAzimuth;
   uniform float uKerrInner;
+  uniform float uKerrLapse;
+  uniform vec2 uKerrWorldPhase;
+  uniform vec2 uKerrWorldOrbit;
+  uniform int uKerrProbeCount;
+  uniform vec4 uKerrProbeEvent[48];
+  uniform vec4 uKerrProbeU[48];
+  uniform float uKerrProbeTau[48];
 
   float kerrRadius(vec3 x, float a) {
     float q = dot(x, x) - a * a;
     return sqrt(0.5 * (q + sqrt(q * q + 4.0 * a * a * x.z * x.z)));
   }
   ${kerrFlowGLSL}
+
+  vec3 kerrWorldCenter(float radius, float phase, float time, float a) {
+    float omega = sqrt(0.5) / (pow(radius, 1.5) + a * sqrt(0.5));
+    float phi = phase + PI * 0.5 + omega * time;
+    float rho = sqrt(radius * radius + a * a);
+    return vec3(rho * cos(phi), rho * sin(phi), 0.0);
+  }
+
+  float kerrInnerProduct(vec3 x, float a, vec4 u, vec4 v) {
+    float r = kerrRadius(x, a);
+    vec4 l = vec4(1.0, -(r * x.x - a * x.y) / (r * r + a * a),
+      -(r * x.y + a * x.x) / (r * r + a * a), -x.z / r);
+    float f = r * r * r / (pow(r, 4.0) + a * a * x.z * x.z);
+    return -u.x * v.x + dot(u.yzw, v.yzw) + f * dot(l, u) * dot(l, v);
+  }
+
+  float kerrWorldShift(vec3 x, vec3 p, float pt, float radius, float a) {
+    float omega = sqrt(0.5) / (pow(radius, 1.5) + a * sqrt(0.5));
+    vec4 v = vec4(1.0, -omega * x.y, omega * x.x, 0.0);
+    float ut = inversesqrt(-kerrInnerProduct(x, a, v, v));
+    return 1.0 / (ut * (pt + omega * (x.x * p.y - x.y * p.x)));
+  }
+
+  float kerrMovingHit(vec3 start, vec3 end, vec3 c0, vec3 c1, vec3 axes) {
+    vec3 relative = (start - c0) / axes;
+    vec3 delta = ((end - start) - (c1 - c0)) / axes;
+    float A = dot(delta, delta), B = dot(relative, delta), C = dot(relative, relative) - 1.0;
+    float D = B * B - A * C;
+    if (D < 0.0 || A <= 0.0) return -1.0;
+    float near = (-B - sqrt(D)) / A, far = (-B + sqrt(D)) / A;
+    float fraction = near >= 0.0 ? near : far;
+    return fraction <= 1.0 ? fraction : -1.0;
+  }
+
+  vec3 kerrWorldLight(int world, vec3 x, vec3 center, vec3 direction, float g, float footprint) {
+    vec3 normal = normalize(x - center);
+    float terrain = 0.65 * skyNoise(normal * 2.0 + 7.3, footprint * 2.0)
+      + 0.35 * skyNoise(normal * 4.0 - 3.1, footprint * 4.0);
+    vec3 albedo = uWorldTint[world] * mix(0.78, 1.06, terrain);
+    float lambert = max(0.0, dot(normal, -normalize(x)));
+    float radius = length(x);
+    float falloff = (1.0 + pow(6.0 / uWorldLightRadius, 2.0)) / (1.0 + pow(radius / uWorldLightRadius, 2.0));
+    float limb = pow(1.0 - max(0.0, dot(normal, -direction)), 10.0);
+    vec3 light = albedo * (0.012 + blackbody(uTemperature * g) * falloff * (1.25 * lambert + 0.045 * limb)) * pow(g, 3.0);
+    return light / max(1.0, max(light.r, max(light.g, light.b)) / 1.05);
+  }
+
+  bool kerrProbeAt(float time, out vec3 x, out vec4 u, out float tau) {
+    x = vec3(0.0); u = vec4(0.0); tau = 0.0;
+    if (uKerrProbeCount < 2 || time < uKerrProbeEvent[0].w || time > uKerrProbeEvent[uKerrProbeCount - 1].w) return false;
+    int low = 0, high = uKerrProbeCount - 1;
+    for (int j = 0; j < 6; j++) {
+      if (high - low <= 1) break;
+      int mid = (low + high) / 2;
+      if (uKerrProbeEvent[mid].w <= time) low = mid; else high = mid;
+    }
+    vec4 a = uKerrProbeEvent[low], b = uKerrProbeEvent[high];
+    vec4 ua = uKerrProbeU[low], ub = uKerrProbeU[high];
+    float dt = b.w - a.w, s = clamp((time - a.w) / dt, 0.0, 1.0);
+    x = (2.0 * s * s * s - 3.0 * s * s + 1.0) * a.xyz
+      + (s * s * s - 2.0 * s * s + s) * dt * ua.yzw / ua.x
+      + (-2.0 * s * s * s + 3.0 * s * s) * b.xyz + (s * s * s - s * s) * dt * ub.yzw / ub.x;
+    u = mix(ua, ub, s);
+    tau = mix(uKerrProbeTau[low], uKerrProbeTau[high], s);
+    return true;
+  }
+
+  float kerrProbeShift(vec3 p, float pt, vec4 u) {
+    return 1.0 / (pt * u.x + dot(p, u.yzw));
+  }
+
+  vec3 kerrProbeLight(float g, float tau) {
+    vec3 red = vec3(1.0, 0.018, 0.002), amber = vec3(1.0, 0.32, 0.025), cyan = vec3(0.65, 0.92, 1.0);
+    vec3 color = g < 0.5 ? mix(red, amber, smoothstep(0.02, 0.5, g)) : mix(amber, cyan, smoothstep(0.5, 0.95, g));
+    float pulse = 1.0 - smoothstep(0.0, 0.22, fract(tau));
+    vec3 light = color * max(pow(g, 3.0), 0.045) * (1.4 + 2.0 * pulse);
+    return light / max(1.0, max(light.r, max(light.g, light.b)) / 1.05);
+  }
 
   vec3 kerrTail(vec3 x, vec3 p, float pt, float a) {
     float rho = length(x);
@@ -738,7 +823,9 @@ export const kerrFragmentShader = fragmentShader.slice(0, fragmentShader.indexOf
     float c = uQuality < 0.5 ? ${K.performanceC} : (uQuality < 1.5 ? ${K.balancedC} : ${K.highC});
     float pixelAngle = ${2 * Math.tan(G.halfFov)} / uResolution.y;
     vec3 light = vec3(0.0), outgoing = initialRay;
-    float transmittance = 1.0;
+    float transmittance = 1.0, rayTime = 0.0;
+    bvec2 seenWorld = bvec2(false);
+    bool seenProbe = false;
     bool escaped = false;
     int hits = 0;
     for (int i = 0; i < ${K.highSteps}; i++) {
@@ -754,20 +841,80 @@ export const kerrFragmentShader = fragmentShader.slice(0, fragmentShader.indexOf
         break;
       }
       vec3 previous = x, previousP = p;
+      float previousTime = rayTime;
       float h = min(c * (r - rp), ${K.stepBound.toFixed(1)});
-      kerrStep(x, p, pt, a, h);
+      kerrStep(x, p, rayTime, pt, a, h);
+      float diskFraction = -1.0;
       if (uLayers.x > 0.5 && previous.z * x.z < 0.0 && hits < 3) {
         float t = previous.z / (previous.z - x.z);
-        vec3 crossing = mix(previous, x, t), crossingP = mix(previousP, p, t);
-        float radius = kerrRadius(crossing, a);
-        if (radius >= uKerrInner && radius <= 8.6) {
-          float pixel = pixelAngle * length(uCameraPosition) / sqrt(1.0 - 1.0 / length(uCameraPosition));
+        float radius = kerrRadius(mix(previous, x, t), a);
+        if (radius >= uKerrInner && radius <= 8.6) diskFraction = t;
+      }
+      vec2 worldFraction = vec2(-1.0);
+      for (int j = 0; j < 2; j++) {
+        if (j >= uWorldCount || seenWorld[j]) continue;
+        vec3 c0 = kerrWorldCenter(uKerrWorldOrbit[j], uKerrWorldPhase[j], previousTime, a);
+        vec3 c1 = kerrWorldCenter(uKerrWorldOrbit[j], uKerrWorldPhase[j], rayTime, a);
+        worldFraction[j] = kerrMovingHit(previous, x, c0, c1, vec3(uWorldRadius[j]));
+      }
+      float probeFraction = -1.0;
+      vec3 pc0, pc1; vec4 pu0, pu1; float tau0, tau1;
+      if (uLayers.w > 0.5 && !seenProbe && uKerrProbeCount > 1) {
+        bool valid0 = kerrProbeAt(max(previousTime, uKerrProbeEvent[0].w), pc0, pu0, tau0);
+        bool valid1 = kerrProbeAt(max(rayTime, uKerrProbeEvent[0].w), pc1, pu1, tau1);
+        if (valid0 && valid1 && previousTime >= uKerrProbeEvent[0].w) {
+          vec3 radial = normalize(pc0);
+          vec3 side = normalize(cross(radial, vec3(0.0, 0.001, 1.0)));
+          vec3 up = cross(side, radial);
+          vec3 q0 = previous - pc0, q1 = x - pc1;
+          vec3 local0 = vec3(dot(q0, side), dot(q0, up), dot(q0, radial));
+          vec3 local1 = vec3(dot(q1, side), dot(q1, up), dot(q1, radial));
+          float worldPixel = distance(uKerrPosition, pc0) * pixelAngle * (1.0 / uKerrLapse);
+          float hullScale = min(1.0, worldPixel * 9.0 / 0.15);
+          float hull = kerrMovingHit(local0, local1, vec3(0.0), vec3(0.0), vec3(0.035, 0.025, 0.13) * hullScale);
+          float wing = kerrMovingHit(local0, local1, vec3(0.0), vec3(0.0), vec3(0.15, 0.014, 0.027) * hullScale);
+          probeFraction = hull >= 0.0 && wing >= 0.0 ? min(hull, wing) : max(hull, wing);
+        }
+      }
+      // Process all crossings in ray order, including bodies on either side of the disk chord.
+      for (int crossingIndex = 0; crossingIndex < 4; crossingIndex++) {
+        float nearest = 2.0; int kind = -1;
+        if (diskFraction >= 0.0) { nearest = diskFraction; kind = 0; }
+        for (int j = 0; j < 2; j++) {
+          if (worldFraction[j] >= 0.0 && worldFraction[j] < nearest) { nearest = worldFraction[j]; kind = j + 1; }
+        }
+        if (probeFraction >= 0.0 && probeFraction < nearest) { nearest = probeFraction; kind = 3; }
+        if (kind < 0) break;
+        vec3 crossing = mix(previous, x, nearest), crossingP = mix(previousP, p, nearest);
+        float time = mix(previousTime, rayTime, nearest);
+        if (kind == 0) {
+          float pixel = pixelAngle * length(uCameraPosition) * (1.0 / uKerrLapse);
           vec3 emission = kerrDisk(crossing, crossingP, pt, a, pixel, velocity);
           light += emission * transmittance;
           transmittance *= exp(-18.0 * length(emission));
-          hits++;
+          hits++; diskFraction = -1.0;
+        } else if (kind == 3) {
+          vec3 center; vec4 u; float tau;
+          if (kerrProbeAt(time, center, u, tau)) {
+            float g = kerrProbeShift(crossingP, pt, u);
+            if (g >= 0.02) {
+              light += kerrProbeLight(g, tau) * transmittance;
+              transmittance = 0.0;
+            }
+          }
+          seenProbe = true; probeFraction = -1.0;
+        } else {
+          int world = kind - 1;
+          vec3 c0 = kerrWorldCenter(uKerrWorldOrbit[world], uKerrWorldPhase[world], previousTime, a);
+          vec3 c1 = kerrWorldCenter(uKerrWorldOrbit[world], uKerrWorldPhase[world], rayTime, a);
+          vec3 center = mix(c0, c1, nearest);
+          float g = kerrWorldShift(crossing, crossingP, pt, uKerrWorldOrbit[world], a);
+          light += kerrWorldLight(world, crossing, center, normalize(x - previous), g, pixelAngle / uWorldRadius[world]) * transmittance;
+          transmittance = 0.0;
+          seenWorld[world] = true; worldFraction[world] = -1.0;
         }
       }
+      if (transmittance < 0.00001) break;
     }
     // Derivatives are evaluated after all lanes rejoin, including captured rays.
     vec3 skyRay = normalize(outgoing);

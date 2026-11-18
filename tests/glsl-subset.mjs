@@ -5,11 +5,15 @@ const binary = (a, b, fn) => Array.isArray(a) ? a.map((v, i) => fn(v, Array.isAr
   : Array.isArray(b) ? b.map(v => fn(a, v)) : fn(a, b);
 const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
 const builtins = {
-  sqrt: Math.sqrt, pow: Math.pow, abs: Math.abs, sin: Math.sin, cos: Math.cos, atan: Math.atan2,
+  sqrt: Math.sqrt, inversesqrt: x => 1 / Math.sqrt(x), pow: Math.pow, abs: Math.abs, sin: Math.sin, cos: Math.cos, atan: Math.atan2,
   min: Math.min, max: Math.max, mod: (a, b) => a - b * Math.floor(a / b),
+  clamp: (x, a, b) => Math.max(a, Math.min(b, x)), fract: x => x - Math.floor(x),
+  smoothstep: (a, b, x) => { const s = Math.max(0, Math.min(1, (x - a) / (b - a))); return s * s * (3 - 2 * s); },
   length: a => Math.hypot(...a), normalize: a => a.map(v => v / Math.hypot(...a)), dot,
   cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
-  vec2: (...v) => v.flat(), vec3: (...v) => v.flat(),
+  vec2: (...v) => v.length === 1 && !Array.isArray(v[0]) ? [v[0], v[0]] : v.flat(),
+  vec3: (...v) => v.length === 1 && !Array.isArray(v[0]) ? [v[0], v[0], v[0]] : v.flat(),
+  vec4: (...v) => v.flat(),
   mix: (a, b, t) => binary(binary(a, 1 - t, (x, y) => x * y), binary(b, t, (x, y) => x * y), (x, y) => x + y),
 };
 const precedence = { '<': 1, '>': 1, '<=': 1, '>=': 1, '+': 2, '-': 2, '*': 3, '/': 3 };
@@ -19,7 +23,7 @@ const operations = { '+': (a, b) => a + b, '-': (a, b) => a - b, '*': (a, b) => 
 
 export function evaluate(expression, values = {}, functions = {}) {
   const tokens = [];
-  const lexer = /\s*(\d+(?:\.\d*)?(?:e[+-]?\d+)?|[A-Za-z_]\w*|<=|>=|[+*/().,<>-])/gy;
+  const lexer = /\s*(\d+(?:\.\d*)?(?:e[+-]?\d+)?|[A-Za-z_]\w*|<=|>=|[+*/().,<>?:-])/gy;
   let offset = 0;
   while (expression.slice(offset).trim()) {
     lexer.lastIndex = offset;
@@ -58,6 +62,11 @@ export function evaluate(expression, values = {}, functions = {}) {
       const operator = tokens[cursor++];
       value = binary(value, parse(precedence[operator] + 1), operations[operator]);
     }
+    if (minimum === 0 && tokens[cursor] === '?') {
+      cursor++;
+      const yes = parse(); take(':'); const no = parse();
+      value = value ? yes : no;
+    }
     return value;
   }
   const result = parse();
@@ -77,9 +86,17 @@ export function functionBody(source, name) {
 }
 
 export function assignment(source, name) {
-  const match = source.match(new RegExp(`\\b${name}\\s*=\\s*([^;]+);`));
+  const match = new RegExp(`\\b${name}\\s*=\\s*`).exec(source);
   assert.ok(match, `GLSL assignment ${name}`);
-  return match[1];
+  const start = match.index + match[0].length;
+  let depth = 0, end = start;
+  for (; end < source.length; end++) {
+    const token = source[end];
+    if (depth === 0 && (token === ',' || token === ';')) break;
+    if (token === '(' || token === '[') depth++;
+    if (token === ')' || token === ']') depth--;
+  }
+  return source.slice(start, end);
 }
 
 export function lastReturn(source) {

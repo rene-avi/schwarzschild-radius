@@ -141,11 +141,12 @@ export function createUI({ presets, metric = 'schwarzschild', initialPreset = 'g
     hud.classList.add('kerr-mode');
     hud.querySelector('.top-center').innerHTML = '<span class="live-dot"></span> LIVE SIMULATION <span class="top-divider">/</span> KERR METRIC';
     hud.querySelector('.object-coordinates').innerHTML = 'KERR GEOMETRY<span>PROCEDURAL · REAL TIME</span>';
-    hud.querySelector('.help-note').textContent = 'Kerr rays and circular disk velocities; picture spin capped at 0.998. Mission clocks retain the selected spin. Fly in, cinematic, probe and picture worlds require Schwarzschild mode.';
-    for (const action of ['fly', 'cinematic', 'probe']) {
+    hud.querySelector('.help-note').textContent = 'Kerr rays, orbiting worlds and a freely falling ZAMO-release probe; picture spin capped at 0.998. Mission clocks retain the selected spin. Fly in and cinematic require Schwarzschild mode. Probe telemetry uses the fixed drop receiver; no flash echo trail in Kerr mode.';
+    hud.querySelector('[data-action="probe"]').title = 'Release from rest relative to the local ZAMO at r = 7; fixed drop receiver';
+    for (const action of ['fly', 'cinematic']) {
       for (const button of hud.querySelectorAll(`[data-action="${action}"]`)) {
         button.disabled = true;
-        button.title = 'Available only in the Schwarzschild picture';
+        button.title = 'Fly-in and cinematic flight paths use the Schwarzschild model';
       }
     }
     for (const [key, note] of [['tilt', 'Kerr disk fixed to the equatorial plane (0°).'], ['lensing', 'Kerr mass fixed at M = 1/2.']]) {

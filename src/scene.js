@@ -6,6 +6,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { vertexShader, fragmentShader, kerrFragmentShader } from './shaders/blackhole.js';
 import { pictureSpin, observerFrame, diskInnerRadius } from './kerrray.js';
+import { KERR_PROBE_KNOTS, probeWindow } from './kerrprobe.js';
 import { filmShader, meterShader, exposureTarget, smoothExposure } from './shaders/post.js';
 import { qualityForScale } from './quality.js';
 
@@ -126,6 +127,15 @@ export class BlackHoleScene {
       uKerrSceneAzimuth: { value: new THREE.Vector3() },
       uKerrInner: { value: 3 },
     };
+    if (metric === 'kerr') Object.assign(this.uniforms, {
+      uKerrLapse: { value: 1 },
+      uKerrWorldPhase: { value: new THREE.Vector2() },
+      uKerrWorldOrbit: { value: new THREE.Vector2() },
+      uKerrProbeCount: { value: 0 },
+      uKerrProbeEvent: { value: Array.from({ length: KERR_PROBE_KNOTS }, () => new THREE.Vector4()) },
+      uKerrProbeU: { value: Array.from({ length: KERR_PROBE_KNOTS }, () => new THREE.Vector4()) },
+      uKerrProbeTau: { value: Array(KERR_PROBE_KNOTS).fill(0) },
+    });
     if (this.software) this.uniforms.uQuality.value = 0;
     this.material = createRayMaterial(this.uniforms, metric);
     this.geometry = new THREE.PlaneGeometry(2, 2);
@@ -168,12 +178,16 @@ export class BlackHoleScene {
   get quality() { return `${qualityForScale(this.scale).mode} · ${Math.round(this.scale * 100)}%`; }
 
   setWorlds(worlds) {
-    const drawn = this.metric === 'kerr' ? [] : worlds.filter(world => world.drawn);
+    const drawn = worlds.filter(world => world.drawn);
     this.uniforms.uWorldCount.value = drawn.length;
     drawn.forEach((world, i) => {
       this.uniforms.uWorldCenter.value[i].fromArray(world.center);
       this.uniforms.uWorldRadius.value[i] = world.radius;
       this.uniforms.uWorldTint.value[i].fromArray(world.id === 'lantern' ? [0.43, 0.58, 0.78] : [0.83, 0.73, 0.50]);
+      if (this.metric === 'kerr') {
+        this.uniforms.uKerrWorldPhase.value.setComponent(i, world.phase);
+        this.uniforms.uKerrWorldOrbit.value.setComponent(i, world.radiusM / 2);
+      }
     });
   }
 
@@ -195,6 +209,7 @@ export class BlackHoleScene {
       u.uTilt.value = 0;
       u.uLensing.value = 1;
       u.uKerrInner.value = diskInnerRadius(spin);
+      u.uKerrLapse.value = 1 / frame.ut;
       u.uKerrPosition.value.fromArray(frame.position);
       for (const [i, key] of ['uKerrObserver', 'uKerrRadial', 'uKerrPolar', 'uKerrAzimuth'].entries()) {
         u[key].value.fromArray(frame.covectors[i]);
@@ -203,7 +218,15 @@ export class BlackHoleScene {
       u.uKerrSceneAzimuth.value.fromArray(frame.sceneBasis[2]);
     }
     u.uDiskIntensity.value = 0.55 + settings.temperature / 12000;
-    if (probe && probe.state !== 'lost') {
+    if (this.metric === 'kerr') {
+      const knots = probe && probe.state !== 'lost' ? probeWindow(probe) : [];
+      u.uKerrProbeCount.value = knots.length;
+      knots.forEach((event, i) => {
+        u.uKerrProbeEvent.value[i].set(...event.x, event.t - probe.elapsed - probe.arrivalDelay);
+        u.uKerrProbeU.value[i].fromArray(event.u);
+        u.uKerrProbeTau.value[i] = event.tau;
+      });
+    } else if (probe && probe.state !== 'lost') {
       u.uProbePosition.value.fromArray(probe.direction).multiplyScalar(probe.radius);
       u.uProbeRadius.value = probe.radius;
       u.uProbeSignal.value = probe.signal;

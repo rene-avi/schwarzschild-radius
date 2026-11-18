@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { integrateProbe, probeImage, createKerrProbe, packKerrProbe, probeDropRefusal, assertReceptionOrder, unpackKerrProbe } from '../src/kerrprobe.js';
+import { horizon } from '../src/kerrray.js';
 
 const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
 const close = (a, b, tolerance, label) => assert.ok(Math.abs(a - b) <= tolerance,
   `${label}: ${a} vs ${b}, error ${Math.abs(a - b)}, tolerance ${tolerance}`);
-const evidence = { schwarzschild: [], kerr: [] };
+const evidence = { schwarzschild: [], kerr: [], timeline: [] };
 const release = elevation => [Math.sin(25 * Math.PI / 180), Math.max(.18, Math.cos(25 * Math.PI / 180) * Math.sin(elevation)), Math.cos(25 * Math.PI / 180) * Math.cos(elevation)];
 
 function integral(f, a, b, tolerance = 2e-11) {
@@ -43,7 +44,7 @@ function schwarzschildReception(position, event) {
   };
   const bottleneck = Math.max(low, Math.min(high, 1.5)), limit = bottleneck / Math.sqrt(f(bottleneck));
   const maximum = radial(limit * (1 - 1e-10), low, high, false);
-  let b, delay, sign;
+  let b, delay, sign, turned = false;
   if (angle < maximum) {
     let lo = 0, hi = limit * (1 - 1e-12);
     for (let i = 0; i < 54; i++) {
@@ -52,6 +53,7 @@ function schwarzschildReception(position, event) {
     }
     b = (lo + hi) / 2; delay = radial(b, low, high, true); sign = Math.sign(rc - re);
   } else {
+    turned = true;
     assert.ok(low > 1.5, 'turning primary is outside the photon sphere');
     let lo = 1.5 + 1e-7, hi = low;
     for (let i = 0; i < 54; i++) {
@@ -64,7 +66,7 @@ function schwarzschildReception(position, event) {
   }
   const E = Math.sqrt(6 / 7), ur = -Math.sqrt(Math.max(0, E * E - f(re)));
   const g = f(re) / (Math.sqrt(f(rc)) * (E - sign * ur * Math.sqrt(Math.max(0, 1 - b * b * f(re) / (re * re)))));
-  return { delay: delay - Math.log(rc - 1) + Math.log(re - 1), g, sign, b };
+  return { delay: delay - Math.log(rc - 1) + Math.log(re - 1), g, sign, b, turned };
 }
 
 test('close zero-spin reception matches independent planar b quadrature across the camera radius', () => {
@@ -103,13 +105,15 @@ test('a later image that reverses arrival order is a solve error, including at t
   assert.doesNotThrow(() => assertReceptionOrder([{ t: 0, arrival: 2 }, { t: 1, arrival: 3 }]));
 });
 
-test('only a release within the finite KS hull size refuses a geometrically overlapping receiver', () => {
+test('release overlap and later KS fly-through refuse; an orbit UI geometry remains admitted', () => {
   for (const spin of [0, .9, .998]) {
     const result = createKerrProbe({ position: [0, 0, 7], direction: [0, 0, 1], spin });
     assert.equal(result.state, 'refused'); assert.match(result.notice, /hull size/);
     assert.equal(probeDropRefusal([0, 0, 7.1], spin, [0, 0, 1])?.includes('hull size'), true);
     assert.equal(probeDropRefusal([0, 0, 7.2], spin, [0, 0, 1]), null);
   }
+  assert.equal(createKerrProbe({ position: [0, 0, 3], direction: [0, 0, 1], spin: 0 }).state, 'refused');
+  assert.equal(createKerrProbe({ position: [0, 0, 3], direction: release(0), spin: 0 }).state, 'falling');
   for (const value of [NaN, Infinity, -Infinity]) {
     assert.throws(() => probeDropRefusal([0, 0, 3], .9, [value, 0, 1]), RangeError);
     assert.throws(() => createKerrProbe({ position: [0, value, 3], spin: .9 }), RangeError);
@@ -117,7 +121,7 @@ test('only a release within the finite KS hull size refuses a geometrically over
 });
 
 // Separated BL Hamiltonian; no KS metric, ray step, frame or momentum from production.
-function blReception(position, spin, event) {
+function blReception(position, spin, event, previous) {
   const a = spin / 2, rp = .5 + Math.sqrt(.25 - a * a), rm = 1 - rp;
   const rc = Math.hypot(...position), re = event.radius, theta = Math.acos(position[1] / rc);
   const offset = r => a / (rp - rm) * Math.log((r - rp) / (r - rm)) + Math.atan(a / r);
@@ -142,47 +146,70 @@ function blReception(position, spin, event) {
   };
   const trace = (n, length) => {
     const L = Math.sqrt(A / Sigma) * Math.sin(theta) * n[2], pt = alpha - omega * L;
-    let s = [0, rc, theta, phi, Math.sqrt(Sigma / Delta) * n[0], Math.sqrt(Sigma) * n[1]], affine = 0;
+    let s = [0, rc, theta, phi, Math.sqrt(Sigma / Delta) * n[0], Math.sqrt(Sigma) * n[1]], affine = 0, minimumRadius = rc;
     for (let i = 0; i < 20000 && affine < length; i++) {
       if (s[1] <= rp + 1e-7) return null;
-      const h = Math.min(length - affine, .006 * (s[1] - rp));
+      // Resolve the BL polar coordinate singularity independently of radial resolution.
+      const polar = Math.abs(Math.sin(s[2])) * (s[1] ** 2 + a * a * Math.cos(s[2]) ** 2) / Math.max(1e-12, Math.abs(s[5]));
+      const h = Math.min(length - affine, .006 * (s[1] - rp), .006 * polar);
       const stage = (v, scale) => s.map((q, j) => q + scale * v[j]);
       const k1 = flow(s, pt, L), k2 = flow(stage(k1, h / 2), pt, L), k3 = flow(stage(k2, h / 2), pt, L), k4 = flow(stage(k3, h), pt, L);
       s = s.map((q, j) => q + h / 6 * (k1[j] + 2 * k2[j] + 2 * k3[j] + k4[j])); affine += h;
+      minimumRadius = Math.min(minimumRadius, s[1]);
     }
-    return { s, pt, L };
+    if (affine < length) return null;
+    return { s, pt, L, turned: minimumRadius < Math.min(rc, re) - 1e-5 };
   };
   const residual = ray => [ray.s[1] - re, re * (ray.s[2] - targetTheta), re * Math.sin(targetTheta) * wrap(ray.s[3] - targetPhi)];
   const dphi = wrap(targetPhi - phi);
   let n = unit([re * Math.cos(theta) * Math.cos(targetTheta) + re * Math.sin(theta) * Math.sin(targetTheta) * Math.cos(dphi) - rc,
     re * (Math.cos(theta) * Math.sin(targetTheta) * Math.cos(dphi) - Math.sin(theta) * Math.cos(targetTheta)), re * Math.sin(targetTheta) * Math.sin(dphi)]);
   let length = Math.hypot(...event.x.map((v, i) => v - [position[2], position[0], position[1]][i]));
-  let ray;
-  for (let iteration = 0; iteration < 16; iteration++) {
-    ray = trace(n, length); assert.ok(ray, 'BL ray reaches the endpoint');
-    const f = residual(ray), error = Math.hypot(...f);
-    if (error < 1e-9) break;
-    const e1 = unit(Math.abs(n[0]) > .7 ? [-n[1], n[0], 0] : [0, -n[2], n[1]]), e2 = cross(n, e1), eps = 1e-6;
-    const jacobian = [e1, e2].map(e => residual(trace(unit(n.map((v, j) => v + eps * e[j])), length)).map((v, j) => (v - f[j]) / eps));
-    jacobian.push(residual(trace(n, length + eps)).map((v, j) => (v - f[j]) / eps));
-    const [u, v, w] = jacobian, det = dot(u, cross(v, w));
-    const step = [dot(f, cross(v, w)), dot(u, cross(f, w)), dot(u, cross(v, f))].map(q => q / det);
-    let accepted = false;
-    for (let damping = 1; damping > 1 / 1024; damping /= 2) {
-      const nextN = unit(n.map((q, j) => q - damping * (step[0] * e1[j] + step[1] * e2[j]))), nextL = length - damping * step[2];
-      const candidate = nextL > 0 && trace(nextN, nextL);
-      if (candidate && Math.hypot(...residual(candidate)) < error) { n = nextN; length = nextL; accepted = true; break; }
+  const initialN = n, initialLength = length;
+  const solve = seed => {
+    n = seed.n; length = seed.length;
+    let ray;
+    for (let iteration = 0; iteration < 48; iteration++) {
+      ray = trace(n, length); if (!ray) return null;
+      const f = residual(ray), error = Math.hypot(...f);
+      if (error < 1e-9) break;
+      const e1 = unit(Math.abs(n[0]) > .7 ? [-n[1], n[0], 0] : [0, -n[2], n[1]]), e2 = cross(n, e1), eps = 1e-6;
+      const rays = [e1, e2].map(e => trace(unit(n.map((v, j) => v + eps * e[j])), length));
+      rays.push(trace(n, length + eps));
+      if (rays.some(ray => !ray)) return null;
+      const jacobian = rays.map(ray => residual(ray).map((v, j) => (v - f[j]) / eps));
+      const [u, v, w] = jacobian, det = dot(u, cross(v, w));
+      const step = [dot(f, cross(v, w)), dot(u, cross(f, w)), dot(u, cross(v, f))].map(q => q / det);
+      let accepted = false;
+      for (let damping = 1; damping > 1 / 1024; damping /= 2) {
+        const nextN = unit(n.map((q, j) => q - damping * (step[0] * e1[j] + step[1] * e2[j]))), nextL = length - damping * step[2];
+        const candidate = nextL > 0 && trace(nextN, nextL);
+        if (candidate && Math.hypot(...residual(candidate)) < error) { n = nextN; length = nextL; accepted = true; break; }
+      }
+      if (!accepted) return null;
     }
-    assert.ok(accepted, `independent BL shooting converges: ${error}`);
+    if (Math.hypot(...residual(ray)) >= 1e-8) return null;
+    return { ...ray, seed: { n, length } };
+  };
+  let ray = previous && solve(previous);
+  const direct = solve({ n: initialN, length: initialLength });
+  if (direct && (!ray || direct.s[0] > ray.s[0])) ray = direct;
+  if (!ray) {
+    const transverse = Math.hypot(initialN[1], initialN[2]);
+    for (const radial of [-.99, -.9, -.5, 0, .5, .9]) {
+      const factor = Math.sqrt(1 - radial * radial) / transverse;
+      const root = solve({ n: [radial, factor * initialN[1], factor * initialN[2]], length: initialLength });
+      if (root && (!ray || root.s[0] > ray.s[0])) ray = root;
+    }
   }
-  assert.ok(Math.hypot(...residual(ray)) < 1e-8, 'independent BL spatial endpoint');
+  assert.ok(ray, 'independent BL shooting converges ' + JSON.stringify({position, spin, t: event.t, radius: re}));
   const x = event.x, u = event.u, D = 2 * re * re - dot(x, x) + a * a;
   const ur = dot([re * x[0] / D, re * x[1] / D, x[2] * (re * re + a * a) / (re * D)], u.slice(1));
   const deltaE = re * re - re + a * a;
   const ut = u[0] + re / deltaE * ur;
   const uth = (Math.cos(targetTheta) * ur - u[3]) / (re * Math.sin(targetTheta));
   const uphi = (x[0] * u[2] - x[1] * u[1]) / (x[0] ** 2 + x[1] ** 2) + (a / deltaE - a / (re * re + a * a)) * ur;
-  return { delay: -ray.s[0] + T(re) - T(rc), g: 1 / (ray.pt * ut + ray.s[4] * ur + ray.s[5] * uth + ray.L * uphi) };
+  return { seed: ray.seed, turned: ray.turned, delay: -ray.s[0] + T(re) - T(rc), g: 1 / (ray.pt * ut + ray.s[4] * ur + ray.s[5] * uth + ray.L * uphi) };
 }
 
 test('close spinning reception matches an independent BL null Hamiltonian before and after crossing', () => {
@@ -210,6 +237,39 @@ test('two converged physical image roots select the earliest BL-verified recepti
   const image = probeImage(position, spin, event, undefined, seeds);
   close(image.delay, expected.delay, 1e-4, 'earliest physical image reception');
   close(image.g, expected.g, 1e-5, 'earliest physical image frequency');
+});
+
+test('actual continued timeline rows match independent references from release through loss, including radial turns', () => {
+  const cases = [[0, 3, .23], [0, 1.5, .23], [.998, 3, .23], [.998, 23, .23],
+    [0, 3, -1.35], [0, 5, -1.35], [.998, 2, -1.35], [.998, 3, -1.35]];
+  for (const [spin, radius, elevation] of cases) {
+    const position = [0, radius * Math.sin(elevation), radius * Math.cos(elevation)];
+    const probe = createKerrProbe({ position, direction: release(elevation), spin });
+    assert.equal(probe.state, 'falling');
+    const rows = packKerrProbe(probe).data.timeline;
+    const selected = new Set([rows[0], rows.at(-2), rows.at(-1)]);
+    for (const fraction of [.2, .4, .6, .8]) selected.add(rows[Math.round(fraction * (rows.length - 1))]);
+    if (radius < 7) for (const r of [radius * 1.01, radius * .99]) {
+      selected.add(rows.reduce((a, b) => Math.abs(a.radius - r) < Math.abs(b.radius - r) ? a : b));
+    }
+    assert.ok(selected.size >= 6);
+    assert.ok(rows.at(-1).radius < Math.min(radius, 7));
+    let previous, turningCompared = false;
+    for (const event of rows) {
+      if (spin === 0 && !selected.has(event)) continue;
+      const expected = spin === 0 ? schwarzschildReception(position, event) : blReception(position, spin, event, previous);
+      previous = expected.seed;
+      if (!selected.has(event)) continue;
+      turningCompared ||= expected.turned;
+      const row = { spin, radius, elevation, t: event.t, emissionRadius: event.radius,
+        timeError: event.arrival - event.t - expected.delay, gError: event.signal - expected.g };
+      evidence.timeline.push(row);
+      close(event.arrival - event.t, expected.delay, 1e-4, JSON.stringify(row));
+      close(event.signal, expected.g, 1e-5, JSON.stringify(row));
+    }
+    if (elevation < 0) assert.ok(turningCompared, 'reference rows include a radial turning point');
+    assert.ok(rows.at(-1).radius > horizon(spin));
+  }
 });
 
 test.after(() => {

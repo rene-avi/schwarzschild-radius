@@ -8,7 +8,7 @@ let cachedFall;
 const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
 function finite(value) { if (!Number.isFinite(value)) throw new RangeError('Probe input must be finite.'); }
 
-export function probeDropRefusal(position, spin, direction) {
+export function probeDropRefusal(position, spin, direction, history) {
   const receiver = observerFrame(position, spin);
   if (direction !== undefined) {
     if (!Array.isArray(direction) || direction.length !== 3 || !direction.every(Number.isFinite)
@@ -16,7 +16,16 @@ export function probeDropRefusal(position, spin, direction) {
     const release = observerFrame(direction.map(v => PROBE_INITIAL_RADIUS * v / Math.hypot(...direction)), spin);
     // The largest KS hull/wing semiaxis is 0.15; a point receiver inside that size is undefined.
     if (Math.hypot(...release.position.map((v, i) => v - receiver.position[i])) <= .15) {
-      return 'Probe not released: the release point is within the probe hull size (0.15 r_s) of the camera.';
+      return 'Probe not released: the fall passes within the probe hull size (0.15 r_s) of the camera.';
+    }
+  }
+  // Segment distances cover crossings between the densely stored KS events as well as release.
+  for (let i = 1; i < (history?.length ?? 0); i++) {
+    const a = history[i - 1].x, delta = history[i].x.map((v, j) => v - a[j]);
+    const offset = receiver.position.map((v, j) => v - a[j]);
+    const s = Math.max(0, Math.min(1, dot(offset, delta) / dot(delta, delta)));
+    if (Math.hypot(...offset.map((v, j) => v - s * delta[j])) <= .15) {
+      return 'Probe not released: the fall passes within the probe hull size (0.15 r_s) of the camera.';
     }
   }
   return null;
@@ -116,6 +125,8 @@ export function createKerrProbe({ position, direction = [0, 0, 1], spin } = {}) 
   const receiver = observerFrame(position, spin), key = JSON.stringify([direction, spin]);
   if (cachedFall?.key !== key) cachedFall = { key, history: integrateProbe({ direction, spin, endUt: 512 }) };
   const history = cachedFall.history;
+  const pathRefusal = probeDropRefusal(position, spin, direction, history);
+  if (pathRefusal) return { metric: 'kerr', state: 'refused', notice: pathRefusal };
   const timeline = [];
   let previous, initialDirection, imageSeeds;
   const continueImage = (event, seed) => {
@@ -135,23 +146,6 @@ export function createKerrProbe({ position, direction = [0, 0, 1], spin } = {}) 
     else row.receptionTime = arrival - timeline[0].arrival;
     timeline.push(row);
     if (i && image.g < PROBE_LOST_SIGNAL) break;
-  }
-  // A missed primary branch is continued backwards in small emission-time steps.
-  for (let i = timeline.length - 2; i >= 0; i--) {
-    const row = timeline[i], next = timeline[i + 1];
-    if (row.arrival < next.arrival) continue;
-    let image, t = next.t;
-    initialDirection = next.direction;
-    imageSeeds = next.imageSeeds;
-    while (t > row.t) {
-      t = Math.max(row.t, t - 0.05);
-      image = probeImage(position, spin, historyAt(history, t), initialDirection, imageSeeds);
-      initialDirection = image.direction; imageSeeds = image.imageSeeds;
-    }
-    if (image.delay < row.arrival - row.t) {
-      row.arrival = row.t + image.delay; row.signal = image.g; row.direction = image.direction;
-      row.imageSeeds = image.imageSeeds;
-    }
   }
   const origin = timeline[0].arrival;
   for (let i = 0; i < timeline.length; i++) {
@@ -186,6 +180,33 @@ export function createKerrProbe({ position, direction = [0, 0, 1], spin } = {}) 
       receptionTime: t + image.delay - timeline[0].arrival });
   }
   timeline.sort((a, b) => a.t - b.t);
+  const fadeIndex = timeline.findIndex(row => row.signal < PROBE_FADE_SIGNAL);
+  if (fadeIndex > 0) {
+    let a = timeline[fadeIndex - 1], b = timeline[fadeIndex];
+    for (let i = 0; i < 18; i++) {
+      const event = historyAt(history, (a.t + b.t) / 2), image = continueImage(event, b);
+      const row = { ...event, signal: image.g, direction: image.direction, imageSeeds: image.imageSeeds,
+        arrival: event.t + image.delay, receptionTime: event.t + image.delay - origin };
+      if (row.signal >= PROBE_FADE_SIGNAL) a = row; else b = row;
+    }
+    timeline.splice(fadeIndex, 0, b);
+  }
+  // Backward continuation resolves curvature between exact flashes and the forward coarse samples.
+  const refine = (a, b, depth = 0) => {
+    const event = historyAt(history, (a.t + b.t) / 2), image = continueImage(event, b);
+    const arrival = event.t + image.delay, s = (arrival - a.arrival) / (b.arrival - a.arrival);
+    const middle = { ...event, signal: image.g, direction: image.direction, imageSeeds: image.imageSeeds,
+      arrival, receptionTime: arrival - origin };
+    const signalError = Math.abs(image.g - (a.signal + s * (b.signal - a.signal)));
+    const timeError = Math.abs(arrival - (a.arrival + b.arrival) / 2);
+    if (depth >= 16) throw new RangeError('Probe telemetry refinement budget exhausted.');
+    if (signalError <= .002 && timeError <= .002) return [];
+    return [...refine(a, middle, depth + 1), middle, ...refine(middle, b, depth + 1)];
+  };
+  for (let i = timeline.length - 2; i >= 0; i--) {
+    const additions = refine(timeline[i], timeline[i + 1]);
+    timeline.splice(i + 1, 0, ...additions);
+  }
   assertReceptionOrder(timeline);
   const probe = { metric: 'kerr', spin, direction: [...direction], elapsed: 0, observerElapsed: 0,
     arrivalDelay: timeline[0].arrival, lostTime: timeline.at(-1).receptionTime, state: 'falling', trail: [],

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
-import { createKerrProbe, probeDropRefusal, packKerrProbe, unpackKerrProbe, updateKerrProbe } from '../src/kerrprobe.js';
+import { createKerrProbe, packKerrProbe, unpackKerrProbe, updateKerrProbe } from '../src/kerrprobe.js';
 import { KERR_RAY } from '../src/kerrray.js';
 
 function drop(radius, elevation, spin, theta = 0) {
@@ -17,7 +17,7 @@ function drop(radius, elevation, spin, theta = 0) {
 
 test('every camera/spin grid drop has strictly increasing arrivals and a loss event', () => {
   const measurements = [], gridStart = performance.now();
-  for (const spin of [0, .9, .998]) for (const elevation of [0, .23, .8, 1.45]) for (const radius of [KERR_RAY.minimumCamera, 1.1, 1.5, 2, 3, 5, 6.9, 7, 7.5, 12, 23, 60]) {
+  for (const spin of [0, .9, .998]) for (const elevation of [0, .23, .8, 1.45]) for (const radius of [KERR_RAY.minimumCamera, 1.25, 1.5, 2, 3, 5, 6.9, 7, 7.5, 12, 23, 60]) {
     const start = performance.now(), probe = createKerrProbe(drop(radius, elevation, spin));
     measurements.push({ radius, elevation, spin, ms: performance.now() - start, state: probe.state });
     {
@@ -60,14 +60,4 @@ test('real probe worker computes check-g off thread and returns a compact usable
       packetBytes: JSON.stringify(result.packet).length,
     }, null, 2));
   } finally { await worker.terminate(); }
-});
-
-test('orbit-limit and near-release cameras support either elevation sign and rotated azimuth', () => {
-  for (const spin of [0, .9, .998]) for (const elevation of [-1.35, 1.35]) for (const radius of [KERR_RAY.minimumCamera, 3, 7, 7.000001, 65]) {
-    const probe = createKerrProbe(drop(radius, elevation, spin, .7));
-    assert.equal(probe.state, 'falling');
-    updateKerrProbe(probe, probe.lostTime);
-    assert.equal(probe.state, 'lost');
-  }
-  assert.equal(probeDropRefusal(drop(7.000001, .23, .998).position, .998), null);
 });

@@ -27,6 +27,18 @@ export function pictureSpin(delta) {
   return 1 - Math.max(delta, 0.002);
 }
 
+/** ZAMO dτ/dt at a scene BL position in r_s units, using the full clock spin. */
+export function zamoClockRate(position, delta) {
+  vector(position);
+  if (!Number.isFinite(delta) || delta <= 0 || delta > 1) throw new RangeError('Spin delta must be in (0, 1].');
+  const r = Math.hypot(...position), a = (1 - delta) / 2;
+  const Delta = (r - 0.5) ** 2 - 0.25 * delta * (2 - delta);
+  if (r <= 0.5 || Delta <= 0) throw new RangeError('Clock must be outside the horizon.');
+  const ct = position[1] / r, sigma = r * r + a * a * ct * ct;
+  const A = (r * r + a * a) ** 2 - a * a * Delta * (1 - ct * ct);
+  return Math.sqrt(Delta * sigma / A);
+}
+
 function radiusAt(x, a) {
   const q = dot(x, x) - a * a;
   return Math.sqrt((q + Math.sqrt(q * q + 4 * a * a * x[2] * x[2])) / 2);
@@ -108,10 +120,12 @@ const jsSource = rounded => {
   const rows = graph.map(row => `const ${row.id} = ${rounded ? `F(${expression(row, ref)})` : expression(row, ref)};`).join('\n');
   return `const sqrt = ${rounded ? 'v => F(Math.sqrt(v))' : 'Math.sqrt'};\n${rows}\nreturn {dx:[${outputs.dx}],dp:[${outputs.dp}]};`;
 };
-const flow64 = new Function('x', 'p', 'pt', 'a', jsSource(false));
-const flow32 = new Function('x', 'p', 'pt', 'a', 'F', jsSource(true));
+let flow64, flow32;
 const named = v => ({ x: v[0], y: v[1], z: v[2] });
 function flow(state, a, f32) {
+  // The default picture imports this module without compiling any dynamic code.
+  if (f32) flow32 ??= new Function('x', 'p', 'pt', 'a', 'F', jsSource(true));
+  else flow64 ??= new Function('x', 'p', 'pt', 'a', jsSource(false));
   return f32 ? flow32(named(state.x), named(state.p), state.pt, a, Math.fround)
     : flow64(named(state.x), named(state.p), state.pt, a);
 }
@@ -174,18 +188,20 @@ function farTail(state, a) {
 
 /** Past-directed rays, p_t fixed; onStep sees the actual states, including float32 rounding. */
 export function traceRay({ position, direction, spin, quality = 'high', stepScale = 1, float32 = false,
-  outerRadius = KERR_RAY.outerRadius, onStep } = {}) {
+  outerRadius = KERR_RAY.outerRadius, maxSteps, onStep } = {}) {
   vector(direction);
   if (!(Math.hypot(...direction) > 0)) throw new RangeError('Ray direction must be nonzero.');
   const frame = observerFrame(position, spin), a = spinValue(spin), surface = horizon(spin) + KERR_RAY.epsilon;
   const c = KERR_RAY[`${quality}C`], budget = KERR_RAY[`${quality}Steps`];
   if (!c || !Number.isFinite(stepScale) || stepScale <= 0 || stepScale > 1
+    || (maxSteps !== undefined && (!Number.isSafeInteger(maxSteps) || maxSteps <= 0))
     || !Number.isFinite(outerRadius) || outerRadius < KERR_RAY.outerRadius) throw new RangeError('Invalid ray budget.');
   const n = norm(direction), cov = frame.covectors;
   const p = cov[0].map((v, i) => -v + n[0] * cov[1][i] + n[1] * cov[2][i] + n[2] * cov[3][i]);
   const F = float32 ? Math.fround : v => v;
   let state = { x: frame.position.map(F), p: p.slice(1).map(F), pt: F(p[0]) };
-  const diskHits = [], inner = diskInnerRadius(spin), maximum = Math.ceil(budget / stepScale + Math.max(0, outerRadius - KERR_RAY.outerRadius) / (KERR_RAY.stepBound * stepScale));
+  const diskHits = [], inner = diskInnerRadius(spin), maximum = maxSteps
+    ?? Math.ceil(budget / stepScale + Math.max(0, outerRadius - KERR_RAY.outerRadius) / (KERR_RAY.stepBound * stepScale));
   onStep?.(state);
   for (let i = 0; i < maximum; i++) {
     const r = radiusAt(state.x, a), velocity = flow(state, F(a), float32).dx;
@@ -207,7 +223,7 @@ export function traceRay({ position, direction, spin, quality = 'high', stepScal
     state = next;
     onStep?.(state);
   }
-  throw new RangeError('Kerr ray budget exhausted.');
+  return { fate: 'budget', direction: null, diskHits, steps: maximum, state };
 }
 
 /** Finite-distance ZAMO critical curve in gnomonic screen coordinates, +x toward increasing phi. */

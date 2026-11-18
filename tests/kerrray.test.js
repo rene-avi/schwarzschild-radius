@@ -2,18 +2,48 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { KERR_RAY, traceRay, horizon, blRadius, observerFrame, invariants, criticalCurve, curveRadius,
-  emitterShift, diskInnerRadius, pictureSpin, kerrFlowGLSL } from '../src/kerrray.js';
-import { traceRay as schwarzschild, GEODESIC } from '../src/geodesic.js';
+  emitterShift, diskInnerRadius, pictureSpin, zamoClockRate, kerrFlowGLSL } from '../src/kerrray.js';
+import { traceRay as schwarzschild, GEODESIC, escapeAngle } from '../src/geodesic.js';
 import { iscoRadius } from '../src/kerr.js';
 import { fragmentShader, kerrFragmentShader } from '../src/shaders/blackhole.js';
 import { createRayMaterial } from '../src/scene.js';
+import { evaluate, functionBody, assignment, lastReturn } from './glsl-subset.mjs';
 
 const metrics = {};
 const close = (a, b, tolerance, label) => assert.ok(Math.abs(a - b) < tolerance, `${label}: ${a} versus ${b}`);
 const angularError = (a, b) => 2 * Math.asin(Math.min(1, Math.hypot(...a.map((v, i) => v - b[i])) / 2));
 const dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
 const at = inclination => [0, 23 * Math.cos(inclination * Math.PI / 180), 23 * Math.sin(inclination * Math.PI / 180)];
+
+test('fresh default imports never call Function and Kerr kernels compile lazily', () => {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./kerr-import.mjs', import.meta.url))], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+function diskCrossings(args) {
+  const crossings = [];
+  let previous;
+  const ray = traceRay({ ...args, onStep(state) {
+    if (previous && previous.x[2] * state.x[2] < 0) {
+      const t = previous.x[2] / (previous.x[2] - state.x[2]);
+      const x = previous.x.map((v, i) => v + t * (state.x[i] - v));
+      // On the equator the quartic reduces to r² = X² + Y² - a².
+      const r = Math.sqrt(x[0] ** 2 + x[1] ** 2 - (args.spin / 2) ** 2);
+      const p = previous.p.map((v, i) => v + t * (state.p[i] - v));
+      if (r >= diskInnerRadius(args.spin) && r <= 8.6 && crossings.length < 3) crossings.push({ x, r, p, pt: state.pt });
+    }
+    previous = state;
+  } });
+  assert.equal(ray.diskHits.length, crossings.length, 'all eligible crossings are recorded');
+  ray.diskHits.forEach((hit, i) => {
+    close(hit.r, blRadius(crossings[i].x, args.spin), 1e-12, 'hit radius at interpolated crossing');
+    close(hit.r, crossings[i].r, 1e-12, 'independent equatorial radius');
+  });
+  return { ray, crossings };
+}
 
 test('Kerr switch preserves the exact evaluated default shader and an empty material defines map', () => {
   assert.equal(fragmentShader.length, 34856);
@@ -62,6 +92,58 @@ test('finite-distance ZAMO critical curves bracket capture in sixteen screen dir
   metrics.edgePixels = { left, right, ratio: left / right };
 });
 
+test('Kerr capture epsilon is at most 0.001 r_s', () => {
+  assert.ok(KERR_RAY.epsilon > 0 && KERR_RAY.epsilon <= 0.001);
+});
+
+function progradeEdge() {
+  const spin = 0.998, a = spin / 2, ro = 23;
+  const r = 1 + Math.cos(2 / 3 * Math.acos(-spin));
+  const xi = (r * r * (r - 1.5) + a * a * (r + 0.5)) / (a * (0.5 - r));
+  const frame = observerFrame([0, 0, ro], spin);
+  const pp = -xi / Math.sqrt(ro * ro + a * a + a * a / ro);
+  const energy = frame.ut * (1 - frame.omega * xi);
+  return pp / Math.sqrt(energy * energy - pp * pp);
+}
+
+test('near-extremal equatorial prograde edge escapes outside and captures inside', () => {
+  const edge = progradeEdge();
+  for (const [factor, fate] of [[0.995, 'captured'], [1.001, 'escaped']]) {
+    const ray = traceRay({ position: [0, 0, 23], direction: [-1, 0, edge * factor], spin: 0.998 });
+    assert.equal(ray.fate, fate, `prograde edge factor ${factor}`);
+  }
+});
+
+test('valid rays return budget with no infinity direction when integration runs out', () => {
+  const args = { position: [0, 0, 23], direction: [-1, 0, progradeEdge() * 1.0001], spin: 0.998 };
+  const ray = traceRay({ ...args, maxSteps: 2 });
+  assert.equal(ray.fate, 'budget');
+  assert.equal(ray.steps, 2);
+  assert.equal(ray.direction, null);
+  assert.deepEqual(ray.diskHits, []);
+  assert.ok(ray.state.x.every(Number.isFinite));
+  assert.equal(traceRay(args).fate, 'budget', 'High near-edge exhaustion is also a valid result');
+  for (const maxSteps of [0, -1, 1.2, Infinity, NaN, null]) {
+    assert.throws(() => traceRay({ ...args, maxSteps }), RangeError);
+  }
+});
+
+test('ZAMO camera clock matches closed-form lapse at two radii and full selected spin', () => {
+  for (const r of [1.1, 23]) for (const delta of [1, 0.1, 0.002, 1e-14]) for (const inclination of [0, 60, 90]) {
+    const theta = inclination * Math.PI / 180, a = (1 - delta) / 2;
+    const position = [0, r * Math.cos(theta), r * Math.sin(theta)];
+    const Delta = r * r - r + a * a, Sigma = r * r + a * a * Math.cos(theta) ** 2;
+    const A = (r * r + a * a) ** 2 - a * a * Delta * Math.sin(theta) ** 2;
+    const alpha = zamoClockRate(position, delta);
+    close(alpha, Math.sqrt(Delta * Sigma / A), 1e-14, 'exact ZAMO lapse');
+    if (delta >= 0.002) close(alpha, 1 / observerFrame(position, 1 - delta).ut, 1e-14, 'tetrad lapse');
+  }
+  assert.notEqual(zamoClockRate([0, 0, 1.1], 1e-14), zamoClockRate([0, 0, 1.1], 0.002), 'clock spin is uncapped');
+  for (const delta of [0, -1, 1.1, NaN, Infinity]) assert.throws(() => zamoClockRate([0, 0, 23], delta), RangeError);
+  assert.throws(() => zamoClockRate([0, 0, 0.5], 0.1), RangeError);
+  assert.throws(() => zamoClockRate([0, NaN, 23], 0.1), RangeError);
+});
+
 function drift(float32) {
   const worst = { H: 0, Lz: 0, Q: 0 };
   for (let i = 0; i < 20; i++) {
@@ -95,21 +177,21 @@ test('float32 scalar operations in the shared shader step keep invariant drift b
 test('axis and off-axis disk frequency shifts agree with independent circular-emitter formulas', () => {
   for (const spin of [0, 0.5, 0.9, 0.998]) {
     const a = spin / 2, ro = 23;
-    const ray = traceRay({ position: [0, ro, 0], direction: [-1, 0.2, 0], spin, stepScale: 0.05 });
+    const { ray, crossings } = diskCrossings({ position: [0, ro, 0], direction: [-1, 0.2, 0], spin, stepScale: 0.05 });
     assert.ok(ray.diskHits.length > 0);
     for (const hit of ray.diskHits) {
-      const r = hit.r;
+      const r = crossings[hit.order].r;
       const obs = 1 / Math.sqrt(1 - ro / (ro * ro + a * a));
       const em = (r ** 1.5 + a * Math.sqrt(0.5)) / (r ** 0.75 * Math.sqrt(r ** 1.5 - 1.5 * Math.sqrt(r) + 2 * a * Math.sqrt(0.5)));
       close(hit.g, obs / em, 1e-6, 'axis shift');
     }
     // A meridional ray starts above the equator and crosses it on the outgoing limb.
     const position = at(85);
-    const edge = traceRay({ position, direction: [-1, 0.04, -0.2], spin, stepScale: 0.05 });
+    const { ray: edge, crossings: edgeCrossings } = diskCrossings({ position, direction: [-1, 0.04, -0.2], spin, stepScale: 0.05 });
     assert.ok(edge.diskHits.length > 0);
     const frame = observerFrame(position, spin), E = -edge.state.pt;
     for (const hit of edge.diskHits) {
-      const r = hit.r, omega = Math.sqrt(0.5) / (r ** 1.5 + a * Math.sqrt(0.5));
+      const r = edgeCrossings[hit.order].r, omega = Math.sqrt(0.5) / (r ** 1.5 + a * Math.sqrt(0.5));
       const em = (r ** 1.5 + a * Math.sqrt(0.5)) / (r ** 0.75 * Math.sqrt(r ** 1.5 - 1.5 * Math.sqrt(r) + 2 * a * Math.sqrt(0.5)));
       const obsOverE = frame.ut * (1 - frame.omega * hit.xi);
       close(hit.g, obsOverE / (em * (1 - omega * hit.xi)), 1e-6, 'ZAMO edge shift');
@@ -157,18 +239,91 @@ test('Kerr disk radius is BL radius and the inner edge is the picture-spin ISCO'
   assert.equal(pictureSpin(1.3e-14), 0.998);
 });
 
-test('Kerr prograde disk has brighter approaching emission and gas advects with orbital velocity', () => {
+test('Kerr prograde disk has brighter approaching emission', () => {
   const position = [0, 23 * Math.sin(0.25), 23 * Math.cos(0.25)], spin = 0.9;
   const hits = [-0.2, 0.2].map(azimuth => traceRay({ position, direction: [-1, 0.1, azimuth], spin, stepScale: 0.1 }).diskHits[0]);
   assert.ok(hits.every(Boolean));
   assert.ok(hits[0].g > hits[1].g, `left approaches: ${JSON.stringify(hits)}`);
-  const r = 4, omega = Math.sqrt(0.5) / (r ** 1.5 + spin / 2 * Math.sqrt(0.5));
-  const phi = 1.2, t = 0.1;
-  const sample = (angle, time) => [Math.cos(angle - omega * time), Math.sin(angle - omega * time)];
-  close(dot(sample(phi, 0), sample(phi + omega * t, t)), 1, 1e-14, 'gas follows positive phi');
-  assert.match(kerrFragmentShader, /gasPattern\(r, angle, -age \* omega/);
   assert.match(fragmentShader, /cos\(angle \+ orbit\)/);
   assert.match(fragmentShader, /cross\(normal, position\)/);
+});
+
+test('actual GLSL disk expressions match traced g, phi and prograde gas drift', () => {
+  const disk = functionBody(kerrFragmentShader, 'kerrDisk');
+  for (const spin of [0.5, 0.9, 0.998]) {
+    const { ray, crossings } = diskCrossings({ position: at(70), direction: [-1, 0.1, -0.2], spin, stepScale: 0.1 });
+    assert.ok(crossings.length);
+    for (const [i, crossing] of crossings.entries()) {
+      const env = { ...crossing, a: spin / 2, PI: Math.PI, uTime: 2, ray: [0.2, 0.3, 0.4], incidence: 0.4, pixel: 0.01 };
+      for (const name of ['omega', 'ut', 'lz', 'g', 'angle', 'age', 'blend']) env[name] = evaluate(assignment(disk, name), env);
+      close(env.g, ray.diskHits[i].g, 1e-12, 'GLSL emitter g');
+      close(env.angle, ray.diskHits[i].phi, 1e-12, 'GLSL KS azimuth');
+      const samples = values => {
+        const phases = [];
+        evaluate(assignment(disk, 'gas'), values, { gasPattern(r, angle, orbit) {
+          phases.push([Math.cos(angle + orbit), Math.sin(angle + orbit)]);
+          return [0, 0];
+        } });
+        assert.equal(phases.length, 2, 'both blended gas samples evaluated');
+        return phases;
+      };
+      const before = samples(env), dt = 0.2, phi = ray.diskHits[i].phi + env.omega * dt;
+      const rho = Math.hypot(crossing.x[0], crossing.x[1]);
+      const moved = { ...env, x: [rho * Math.cos(phi), rho * Math.sin(phi), 0], uTime: env.uTime + dt };
+      for (const name of ['angle', 'age', 'blend']) moved[name] = evaluate(assignment(disk, name), moved);
+      samples(moved).forEach((phase, j) => phase.forEach((v, k) => close(v, before[j][k], 1e-12, 'GLSL gas follows traced positive phi')));
+    }
+  }
+});
+
+test('actual GLSL disk return applies full g cubed to brightness and g to temperature', () => {
+  const result = lastReturn(functionBody(kerrFragmentShader, 'kerrDisk'));
+  for (const r of [2, 5]) {
+    const g = emitterShift(r, 0.9, 1, 0);
+    let temperature;
+    const light = evaluate(result, { r, g, uKerrInner: r, uTemperature: 6500,
+      radial: 1, density: 1, hotEdge: 0, edge: 1, grazing: 1, uDiskIntensity: 1 }, {
+      blackbody(value) { temperature = value; return 1; },
+    });
+    close(temperature, 6500 * g, 1e-9, 'GLSL colour temperature');
+    close(light, 1.75 * g ** 3, 1e-12, 'GLSL radiance factor');
+  }
+});
+
+test('actual GLSL far tail and cyclic escape axes agree with JS infinity directions', () => {
+  const tail = functionBody(kerrFragmentShader, 'kerrTail');
+  const flow = functionBody(kerrFragmentShader, 'kerrFlow');
+  const main = functionBody(kerrFragmentShader, 'main');
+  const outgoing = assignment(main.slice(main.indexOf('if (r >')), 'outgoing');
+  for (const spin of [0, 0.9, 0.998]) {
+    const ray = traceRay({ position: at(60), direction: [-1, 0.13, 0.25], spin });
+    assert.equal(ray.fate, 'escaped');
+    const env = { ...ray.state, a: spin / 2 };
+    const direction = evaluate(outgoing, env, { kerrTail(x, p, pt, a) {
+      const v = { x, p, pt, a };
+      for (const row of flow.matchAll(/float (\w+) = ([^;]+);/g)) v[row[1]] = evaluate(row[2], v);
+      v.velocity = evaluate(assignment(flow, 'dx'), v);
+      for (const name of ['rho', 'radial', 'b', 'tangent', 'angle']) {
+        v[name] = evaluate(assignment(tail, name), v, { escapeAngle: (u, b) => escapeAngle(u, b, 1) });
+      }
+      return evaluate(lastReturn(tail), v);
+    } });
+    direction.forEach((v, i) => close(v, ray.direction[i], 1e-12, 'GLSL tail scene direction'));
+  }
+});
+
+test('actual GLSL capture condition matches JS last and penultimate states', () => {
+  const main = functionBody(kerrFragmentShader, 'main');
+  const condition = main.slice(main.indexOf('float r = kerrRadius')).match(/if\s*\(([^)]+)\)\s*break;/)?.[1];
+  assert.ok(condition, 'capture condition found');
+  for (const spin of [0, 0.9, 0.998]) {
+    const states = [];
+    const ray = traceRay({ position: at(60), direction: [-1, 0, 0], spin, onStep: state => states.push(state) });
+    assert.equal(ray.fate, 'captured');
+    for (const [state, captured] of [[states.at(-2), false], [ray.state, true]]) {
+      assert.equal(evaluate(condition, { r: blRadius(state.x, spin), rp: horizon(spin) }), captured, `GLSL capture a=${spin}`);
+    }
+  }
 });
 
 test('far-field tail is measured against integration to 10000 M', () => {

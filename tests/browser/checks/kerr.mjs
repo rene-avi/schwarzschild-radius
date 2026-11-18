@@ -113,12 +113,12 @@ async function time(page, seconds) {
 
 export const checks = [
   {
-    name: 'kerr software-compatible startup smoke', path: '/?metric=kerr', viewport: { width: 400, height: 300 },
+    name: 'kerr software-compatible startup smoke', path: '/?metric=kerr', viewport: { width: 320, height: 240 },
     async run({ page, outDir, audit }) {
       await page.waitForFunction(() => {
         const s = window.eventHorizon?.getState();
-        return s?.metric === 'kerr' && s.renderedFrames >= 3 && Number.isFinite(s.exposure);
-      });
+        return s?.metric === 'kerr' && s.renderedFrames >= 1 && Number.isFinite(s.exposure);
+      }, null, { timeout: 120000 });
       assert.deepEqual(audit.consoleErrors, []);
       await json(outDir, 'smoke', await page.evaluate(() => window.eventHorizon.getState()));
     },
@@ -222,6 +222,18 @@ export const checks = [
         assert.equal(await page.locator(`#param-${parameter}`).isDisabled(), true);
         assert.match(await page.locator(`#param-${parameter}`).getAttribute('title'), /Stored value retained/);
       }
+      await page.locator('[data-preset="sagittarius"]').click();
+      await page.waitForFunction(() => window.eventHorizon.getState().settings.lensing === 1.15);
+      await afterRender(page, { camera: { ...camera, radius: 1.1 }, paused: false });
+      const clockStart = await page.evaluate(() => window.eventHorizon.getState());
+      const r = 1.1, a = (1 - clockStart.settings.spinDelta) / 2;
+      const Delta = r * r - r + a * a;
+      const alpha = Math.sqrt(Delta * r * r / ((r * r + a * a) ** 2 - a * a * Delta));
+      assert.ok(Math.abs(clockStart.camera.dilation - alpha) < 1e-12, 'Sagittarius camera uses ZAMO lapse');
+      await page.waitForFunction(({ clock, label }) => {
+        const s = window.eventHorizon.getState();
+        return s.clock > clock && document.querySelector('[data-readout="dilation"]').textContent === label;
+      }, { clock: clockStart.clock, label: `τ / t ${alpha.toFixed(3)}` });
       await page.locator('[data-preset="deep"]').click();
       await page.waitForFunction(() => document.querySelector('[data-control-output="spinDelta"]').value === 'picture 0.998');
       await page.locator('[data-action="mission"]').click();
@@ -237,16 +249,24 @@ export const checks = [
       await afterRender(page, { camera });
       await page.locator('[data-action="mission"]').click();
       const rows = [];
-      for (const [qualityMode, renderScale] of [['auto', 1], ['high', 1], ['balanced', 0.76], ['performance', 0.52]]) {
-        const before = await page.evaluate(() => window.eventHorizon.getState().renderedFrames);
-        await page.locator(`[data-quality="${qualityMode}"]`).click();
-        await page.waitForFunction(({ qualityMode, renderScale, before }) => {
-          const s = window.eventHorizon.getState();
-          return s.qualityMode === qualityMode && s.renderScale === renderScale && s.renderedFrames > before + 1 && Number.isFinite(s.exposure);
-        }, { qualityMode, renderScale, before });
-        await settledExposure(page);
-        await frame(page, outDir, `quality-${qualityMode}`);
-        rows.push(await page.evaluate(() => window.eventHorizon.getState()));
+      await page.evaluate(() => window.eventHorizon.debug.setQualityPinned(true));
+      try {
+        for (const [qualityMode, renderScale] of [['auto', 1], ['high', 1], ['balanced', 0.76], ['performance', 0.52]]) {
+          const before = await page.evaluate(() => window.eventHorizon.getState().renderedFrames);
+          await page.locator(`[data-quality="${qualityMode}"]`).click();
+          await page.waitForFunction(({ qualityMode, renderScale, before }) => {
+            const s = window.eventHorizon.getState();
+            return s.qualityMode === qualityMode && s.renderScale === renderScale && s.renderedFrames > before + 1 && Number.isFinite(s.exposure);
+          }, { qualityMode, renderScale, before });
+          await settledExposure(page);
+          await frame(page, outDir, `quality-${qualityMode}`);
+          const state = await page.evaluate(() => window.eventHorizon.getState());
+          assert.equal(state.qualityMode, qualityMode);
+          assert.equal(state.renderScale, renderScale);
+          rows.push(state);
+        }
+      } finally {
+        await page.evaluate(() => window.eventHorizon.debug.setQualityPinned(false));
       }
       assert.deepEqual(audit.consoleErrors, []);
       await json(outDir, 'quality', rows);

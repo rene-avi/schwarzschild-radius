@@ -158,7 +158,7 @@ export function createUI({ presets, metric = 'schwarzschild', initialPreset = 'g
       input.after(text);
     }
     hud.querySelector('[data-readout="shadowFraction"]').closest('.metric').title = 'Schwarzschild shadow estimate unavailable for the Kerr picture';
-    hud.querySelector('.simulation-time').title = 'Schwarzschild reference clock; Mission uses exact Kerr orbit clocks';
+    hud.querySelector('.simulation-time').title = 'Kerr ZAMO camera clock; Mission uses exact Kerr orbit clocks';
   }
   const events = new AbortController();
   const options = { signal: events.signal };

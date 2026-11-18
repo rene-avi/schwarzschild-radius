@@ -6,7 +6,7 @@ import { createUI } from './ui.js';
 import { QualityController } from './quality.js';
 import { allowsShortcut, shortcutForCode, shortcutNotice } from './shortcuts.js';
 import { spinFromDelta } from './kerr.js';
-import { KERR_RAY } from './kerrray.js';
+import { KERR_RAY, zamoClockRate } from './kerrray.js';
 import { reset as resetLedger, advance as advanceLedger, travel as travelLedger } from './ledger.js';
 import { crewStep } from './mission.js';
 import { START_PHASES, advancePhases, drawnWorlds, retardedPosition } from './worldview.js';
@@ -35,6 +35,7 @@ let fps = 60;
 let flyMilestones = new Set();
 let renderedFrames = 0;
 const qualityController = new QualityController();
+let qualityPinned = false;
 let contextLost = false;
 const events = new AbortController();
 const eventOptions = { signal: events.signal };
@@ -45,6 +46,11 @@ function setPictureLensing() {
   if (metric === 'kerr') camera.minimum = KERR_RAY.minimumCamera;
 }
 setPictureLensing();
+
+function referenceDilation() {
+  return metric === 'kerr' ? zamoClockRate(camera.position.toArray(), settings.spinDelta)
+    : timeDilation(camera.radius, settings.lensing);
+}
 
 function action(type) {
   if (metric === 'kerr' && ['probe', 'fly', 'cinematic'].includes(type)) return;
@@ -175,7 +181,7 @@ function animate(now) {
   const dt = Math.min(rawDt, 0.1);
   const simDt = paused ? 0 : dt * settings.timeScale;
   camera.update(dt);
-  const dilation = timeDilation(camera.radius, settings.lensing);
+  const dilation = referenceDilation();
   if (camera.mode === 'fly') {
     for (const [id, reached, message] of [
       ['disk', camera.radius < 2.95 - 0.35 * settings.spin, 'INSIDE THE DISK’S INNER EDGE · The shadow rises around you'],
@@ -199,7 +205,7 @@ function animate(now) {
   if (crewSeconds > 0) ledger = advanceLedger(ledger, crewSeconds, settings.spinDelta);
   if (probe) updateProbe(probe, paused ? 0 : dt, settings.timeScale);
 
-  const qualityDecision = qualityController.feed(rawDt);
+  const qualityDecision = qualityPinned ? null : qualityController.feed(rawDt);
   fps = qualityController.fps;
   applyQuality(qualityDecision);
   try {
@@ -223,6 +229,7 @@ function animate(now) {
 }
 
 const debug = new URLSearchParams(window.location.search).get('debug') === '1' ? Object.freeze({
+  setQualityPinned(value) { if (typeof value === 'boolean') qualityPinned = value; },
   setCamera: values => camera.setCamera(values),
   setLayers(values) {
     if (typeof values.worlds === 'boolean') worldsLayer = values.worlds;
@@ -246,7 +253,7 @@ Object.defineProperty(window, 'eventHorizon', {
   configurable: true,
   value: Object.freeze({ ...(debug ? { debug } : {}), getState: () => ({ metric, settings: { ...settings }, camera: {
     mode: camera.mode, radius: camera.radius, theta: camera.theta, elevation: camera.elevation,
-    dilation: timeDilation(camera.radius, settings.lensing), gazeYaw: camera.gazeYaw, gazePitch: camera.gazePitch,
+    dilation: referenceDilation(), gazeYaw: camera.gazeYaw, gazePitch: camera.gazePitch,
     shadowFraction: camera.shadowFraction,
   }, ledger: {
     location: ledger.location, homeSeconds: ledger.homeSeconds, crewSeconds: ledger.crewSeconds,

@@ -7,6 +7,7 @@ import { GEODESIC } from '../../../src/geodesic.js';
 import { worldImage, traceWorld, directEventImage } from '../../../src/kerrworlds.js';
 import { integrateProbe, historyAt, probeImage } from '../../../src/kerrprobe.js';
 import { screenPoint } from '../../../src/worldview.js';
+import { geometry, pixelRay, inPolygon, edgeDistance, classifyWorldChanges, traceWorldPixel } from '../../kerr-world-silhouettes.mjs';
 
 const viewport = { width: 900, height: 900 };
 const layers = { disk: false, sky: true, ring: false, probe: false, worlds: false };
@@ -114,33 +115,6 @@ async function time(page, seconds) {
   await settledExposure(page);
 }
 
-const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
-function geometry(elevation = 0.23) {
-  const radial = [0, Math.sin(elevation), Math.cos(elevation)];
-  return { position: radial.map(v => v * 23), radial,
-    forward: radial.map(v => -v), right: [1, 0, 0], up: [0, Math.cos(elevation), -Math.sin(elevation)],
-    polar: [0, -Math.cos(elevation), Math.sin(elevation)], azimuth: [1, 0, 0] };
-}
-function pixelRay(x, y, basis) {
-  const sx = (x - centre) / scale, sy = (centre - y) / scale;
-  const d = basis.forward.map((v, i) => v + sx * basis.right[i] + sy * basis.up[i]);
-  return [dot(d, basis.radial), dot(d, basis.polar), dot(d, basis.azimuth)];
-}
-function inPolygon(x, y, polygon) {
-  let inside = false;
-  for (let i = 0; i < polygon.length; i++) {
-    const a = polygon[i], b = polygon[(i + 1) % polygon.length];
-    if ((a.y > y) !== (b.y > y) && x < a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y)) inside = !inside;
-  }
-  return inside;
-}
-function edgeDistance(x, y, polygon) {
-  return Math.min(...polygon.map((a, i) => {
-    const b = polygon[(i + 1) % polygon.length], dx = b.x - a.x, dy = b.y - a.y;
-    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / (dx * dx + dy * dy)));
-    return Math.hypot(x - a.x - t * dx, y - a.y - t * dy);
-  }));
-}
 function differencePixels(on, off, bounds) {
   const result = [];
   for (let y = Math.max(0, Math.floor(bounds.minY)); y <= Math.min(899, Math.ceil(bounds.maxY)); y++) {
@@ -385,11 +359,13 @@ export const checks = [
         rows.push({ id: world.id, point, polygon, changed: changed.length, maximumLimbError: Math.max(...errors) });
       }
       const allChanged = differencePixels(on, off, { minX: 0, maxX: 899, minY: 0, maxY: 899 });
-      const unexpected = allChanged.filter(p => !rows.some(row => inPolygon(p.x, p.y, row.polygon)
-        || edgeDistance(p.x, p.y, row.polygon) <= 3));
-      assert.equal(unexpected.length, 0, `No third silhouette outside the two drawn worlds: ${unexpected.length} pixels`);
+      const classification = classifyWorldChanges(allChanged, rows,
+        p => traceWorldPixel(p, { basis, spin: .998, worlds: state.worlds }));
+      // Save even failed classifications so the host can inspect unexplained pixels.
+      await json(outDir, 'world-silhouettes', { rows, classification, offExposure, onExposure: state.exposure });
+      assert.equal(classification.unexplained.length, 0,
+        `No unexplained silhouette outside the drawn worlds: ${JSON.stringify(classification.unexplained)}`);
       assert.deepEqual(audit.consoleErrors, []);
-      await json(outDir, 'world-silhouettes', { rows, unexpected, offExposure, onExposure: state.exposure });
     },
   },
   {

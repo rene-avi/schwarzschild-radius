@@ -930,7 +930,8 @@ export const kerrFragmentShader = fragmentShader.slice(0, fragmentShader.indexOf
           seenWorld[world] = true; worldFraction[world] = -1.0;
         }
       }
-      if (transmittance < 0.00001) break;
+      // Continue vacuum integration behind opaque surfaces: neighbouring sky
+      // derivatives must use the same outgoing rays with worlds/probe on or off.
     }
     // Derivatives are evaluated after all lanes rejoin, including captured rays.
     vec3 skyRay = normalize(outgoing);

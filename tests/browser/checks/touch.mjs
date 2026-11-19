@@ -3,16 +3,36 @@ import { afterRender } from '../pixels.mjs';
 
 const point = (id, x, y = 400) => ({ id, x, y, radiusX: 5, radiusY: 5, force: 1 });
 
+async function touchInput(page, engine) {
+  if (engine === 'webkit') {
+    // Playwright 1.63 exposes only taps publicly; its bundled WebKit protocol supports native multi-touch.
+    const session = page._connection?.toImpl?.(page)?._delegate?._pageProxySession;
+    assert.ok(session?.send, 'Playwright WebKit native touch session is unavailable');
+    return {
+      dispatch: (type, points) => session.send('Input.dispatchTouchEvent', {
+        type, modifiers: 0, touchPoints: points.map(({ id, x, y }) => ({ id, x, y })),
+      }),
+      close: async () => {},
+    };
+  }
+  const session = await page.context().newCDPSession(page);
+  return {
+    dispatch: (type, touchPoints) => session.send('Input.dispatchTouchEvent', { type, touchPoints }),
+    close: () => session.detach(),
+  };
+}
+
 export const checks = [{
   name: 'real two-finger pinch zoom and fly free look',
   path: '/?debug=1',
   viewport: { width: 500, height: 800 },
   contextOptions: { hasTouch: true, deviceScaleFactor: 1 },
-  async run({ page }) {
+  uiOnly: true,
+  async run({ page, engine = 'chromium', measure = (_name, operation) => operation() }) {
     await page.keyboard.press('KeyH');
     await page.waitForFunction(() => document.body.classList.contains('hud-hidden'));
-    const session = await page.context().newCDPSession(page);
-    const dispatch = (type, touchPoints) => session.send('Input.dispatchTouchEvent', { type, touchPoints });
+    const input = await touchInput(page, engine);
+    const dispatch = (type, points) => measure(`native touch ${type}: ${JSON.stringify(points)}`, () => input.dispatch(type, points));
     try {
       const before = await page.evaluate(() => window.eventHorizon.getState().camera);
       assert.ok(Math.abs(before.radius - 23) <= 1e-6);
@@ -53,7 +73,7 @@ export const checks = [{
       });
     } finally {
       await dispatch('touchCancel', []).catch(() => {});
-      await session.detach();
+      await input.close();
     }
   },
 }];

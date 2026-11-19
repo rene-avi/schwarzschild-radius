@@ -601,4 +601,4 @@ export const checks = [
       }
     },
   })),
-];
+].map(check => ({ ...check, uiOnly: true, reuse: true }));

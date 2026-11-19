@@ -9,6 +9,7 @@ import { integrateProbe, historyAt, probeImage } from '../../../src/kerrprobe.js
 import { screenPoint } from '../../../src/worldview.js';
 import { geometry, pixelRay, inPolygon, edgeDistance, classifyWorldChanges, traceWorldPixel } from '../../kerr-world-silhouettes.mjs';
 
+const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
 const viewport = { width: 900, height: 900 };
 const layers = { disk: false, sky: true, ring: false, probe: false, worlds: false };
 const camera = { radius: 23, theta: 0, elevation: 0, yaw: 0, pitch: 0 };

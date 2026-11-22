@@ -294,6 +294,21 @@ function animate(now) {
 
 const debug = new URLSearchParams(window.location.search).get('debug') === '1' ? Object.freeze({
   setQualityPinned(value) { if (typeof value === 'boolean') qualityPinned = value; },
+  setRenderBudget(maxPixels) {
+    if (!Number.isFinite(maxPixels) || maxPixels < 1) throw new RangeError('Positive pixel budget required');
+    // Bound UI-test fill rate independently of the real quality controller and CSS layout.
+    scene.debugResize ??= scene.resize.bind(scene);
+    scene.resize = () => {
+      scene.debugResize();
+      const width = window.innerWidth, height = window.innerHeight;
+      const ratio = Math.min(scene.renderer.getPixelRatio(), Math.sqrt(maxPixels / (width * height)));
+      scene.renderer.setPixelRatio(ratio);
+      scene.composer.setPixelRatio(ratio);
+      scene.uniforms.uResolution.value.set(Math.round(width * ratio), Math.round(height * ratio));
+      scene.uniforms.uPixelRatio.value = ratio;
+    };
+    scene.resize();
+  },
   setCamera: values => camera.setCamera(values),
   setLayers(values) {
     if (typeof values.worlds === 'boolean') worldsLayer = values.worlds;

@@ -6,11 +6,16 @@ import { createUI } from './ui.js';
 import { QualityController } from './quality.js';
 import { allowsShortcut, shortcutForCode, shortcutNotice } from './shortcuts.js';
 import { spinFromDelta } from './kerr.js';
+import { KERR_RAY, zamoClockRate, pictureSpin } from './kerrray.js';
+import { worldEvent, worldImage, photonOrbit } from './kerrworlds.js';
+import { probeDropRefusal, unpackKerrProbe, updateKerrProbe } from './kerrprobe.js';
+import KerrProbeWorker from './kerrprobe-worker.js?worker&inline';
 import { reset as resetLedger, advance as advanceLedger, travel as travelLedger } from './ledger.js';
 import { crewStep } from './mission.js';
 import { START_PHASES, advancePhases, drawnWorlds, retardedPosition } from './worldview.js';
 
 const canvas = document.querySelector('#universe');
+const metric = new URLSearchParams(window.location.search).get('metric') === 'kerr' ? 'kerr' : 'schwarzschild';
 const settings = { ...PRESETS.gargantua };
 function refreshVisualSpin() {
   settings.spin = Math.min(0.99, spinFromDelta(settings.spinDelta));
@@ -20,6 +25,11 @@ let ledger = resetLedger();
 let missionRunning = false;
 let paused = false;
 let probe = null;
+let probeWorker = null;
+function cancelProbeDrop() {
+  probeWorker?.terminate();
+  probeWorker = null;
+}
 let simulationTime = 0;
 let worldPhases = { ...START_PHASES };
 let worldsLayer = true;
@@ -33,25 +43,89 @@ let fps = 60;
 let flyMilestones = new Set();
 let renderedFrames = 0;
 const qualityController = new QualityController();
+let qualityPinned = false;
 let contextLost = false;
 const events = new AbortController();
 const eventOptions = { signal: events.signal };
 
 const camera = new ObservatoryCamera(canvas, (mode) => ui?.setMode(mode));
+function setPictureLensing() {
+  camera.setLensing(metric === 'kerr' ? 1 : settings.lensing);
+  if (metric === 'kerr') camera.minimum = KERR_RAY.minimumCamera;
+}
+setPictureLensing();
+
+function referenceDilation() {
+  return metric === 'kerr' ? zamoClockRate(camera.position.toArray(), settings.spinDelta)
+    : timeDilation(camera.radius, settings.lensing);
+}
+
+const kerrWorldImages = new Map();
+function pictureWorldState({ id, drawn, center, radius, phase, radiusM }) {
+  if (metric !== 'kerr') return { id, drawn, center: [...center], radius };
+  const spin = pictureSpin(settings.spinDelta), position = camera.position.toArray();
+  const key = JSON.stringify([phase, position, spin]);
+  let cached = kerrWorldImages.get(id);
+  if (drawn && cached?.key !== key) {
+    let image;
+    try { image = worldImage({ radius: radiusM / 2, phase, position, spin }); } catch { /* Occulted direct images have no centre. */ }
+    cached = { key, image }; kerrWorldImages.set(id, cached);
+  }
+  const image = cached?.key === key ? cached.image : undefined;
+  return { id, drawn, radius, phase, orbitRadius: radiusM / 2, center: image ? [image.x[1], image.x[2], image.x[0]] : null,
+    direction: image ? [...image.sceneDirection] : undefined, delay: image?.delay };
+}
 
 function action(type) {
+  if (metric === 'kerr' && ['fly', 'cinematic'].includes(type)) return;
   switch (type) {
     case 'probe':
-      {
-        const tilt = settings.tilt * Math.PI / 180;
+      try {
+        cancelProbeDrop();
+        const tilt = metric === 'kerr' ? 0 : settings.tilt * Math.PI / 180;
         const normal = [0, Math.cos(tilt), -Math.sin(tilt)];
         const radial = camera.position.clone().normalize().multiplyScalar(Math.cos(25 * Math.PI / 180));
         radial.addScaledVector(camera.right, Math.sin(25 * Math.PI / 180));
         const clearance = Math.max(0, 0.18 - radial.toArray().reduce((sum, v, i) => sum + v * normal[i], 0));
         const direction = radial.toArray().map((value, i) => value + clearance * normal[i]);
+        if (metric === 'kerr') {
+          const drop = { position: camera.position.toArray(), direction, spin: pictureSpin(settings.spinDelta) };
+          const refusal = probeDropRefusal(drop.position, drop.spin, drop.direction);
+          if (refusal) { ui.setNotice(refusal); break; }
+          const worker = new KerrProbeWorker();
+          probeWorker = worker;
+          ui.setNotice('Computing the Kerr probe reception timeline…');
+          worker.onmessage = ({ data }) => {
+            if (probeWorker !== worker) return;
+            try {
+              if (data.notice) ui.setNotice(data.notice);
+              else {
+                probe = unpackKerrProbe(data.packet);
+                ui.setNotice('Watch the beacon: one flash per second of its own time.');
+              }
+            } catch (error) { ui.setNotice(`Probe not released: ${error.message}`); }
+            cancelProbeDrop();
+          };
+          worker.onerror = event => {
+            event.preventDefault();
+            if (probeWorker !== worker) return;
+            ui.setNotice(`Probe not released: ${event.message || 'the reception calculation failed.'}`);
+            cancelProbeDrop();
+          };
+          worker.onmessageerror = () => {
+            if (probeWorker !== worker) return;
+            ui.setNotice('Probe not released: the reception calculation could not be decoded.');
+            cancelProbeDrop();
+          };
+          worker.postMessage(drop);
+          break;
+        }
         probe = createProbe({ observerRadius: Math.max(7, camera.radius), direction });
+        ui.setNotice('Watch the beacon: one flash per second of its own time.');
+      } catch (error) {
+        cancelProbeDrop();
+        ui.setNotice(`Probe not released: ${error.message}`);
       }
-      ui.setNotice('Watch the beacon: one flash per second of its own time.');
       break;
     case 'cinematic':
       camera.setMode(camera.mode === 'cinematic' ? 'orbit' : 'cinematic');
@@ -69,6 +143,7 @@ function action(type) {
       ui.setNotice('STELLAR ALIGNMENT · A background star forms an Einstein ring');
       break;
     case 'reset':
+      cancelProbeDrop();
       camera.reset();
       probe = null;
       clock = 0;
@@ -92,13 +167,15 @@ function action(type) {
 }
 
 ui = createUI({
+  metric,
   presets: PRESETS,
   initialPreset: 'gargantua',
   onPreset(id) {
     if (!PRESETS[id]) return;
+    cancelProbeDrop();
     Object.assign(settings, PRESETS[id]);
     refreshVisualSpin();
-    camera.setLensing(settings.lensing);
+    setPictureLensing();
     camera.setDisk(settings.tilt, settings.spin);
     camera.reset();
     probe = null;
@@ -107,8 +184,8 @@ ui = createUI({
   },
   onChange(key, value) {
     if (key in settings && Number.isFinite(value)) settings[key] = value;
-    if (key === 'spinDelta') refreshVisualSpin();
-    if (key === 'lensing') camera.setLensing(settings.lensing);
+    if (key === 'spinDelta') { refreshVisualSpin(); if (metric === 'kerr') { cancelProbeDrop(); probe = null; } }
+    if (key === 'lensing') setPictureLensing();
     if (key === 'tilt' || key === 'spinDelta') camera.setDisk(settings.tilt, settings.spin);
   },
   onQuality(mode) { applyQuality(qualityController.setMode(mode)); },
@@ -133,7 +210,7 @@ function showFailure(message) {
 }
 
 try {
-  scene = new BlackHoleScene(canvas, settings);
+  scene = new BlackHoleScene(canvas, settings, metric);
 } catch (error) {
   console.error(error);
   showFailure('The observatory needs WebGL 2. Enable hardware acceleration in your browser and reload to begin.');
@@ -166,7 +243,7 @@ function animate(now) {
   const dt = Math.min(rawDt, 0.1);
   const simDt = paused ? 0 : dt * settings.timeScale;
   camera.update(dt);
-  const dilation = timeDilation(camera.radius, settings.lensing);
+  const dilation = referenceDilation();
   if (camera.mode === 'fly') {
     for (const [id, reached, message] of [
       ['disk', camera.radius < 2.95 - 0.35 * settings.spin, 'INSIDE THE DISK’S INNER EDGE · The shadow rises around you'],
@@ -179,18 +256,20 @@ function animate(now) {
     }
   }
   simulationTime += simDt;
-  worldPhases = advancePhases(worldPhases, simDt, settings.spinDelta);
+  worldPhases = advancePhases(worldPhases, simDt, metric === 'kerr' ? Math.max(settings.spinDelta, 0.002) : settings.spinDelta);
   pictureWorlds = drawnWorlds(settings.spinDelta, settings.lensing).map(body => ({ ...body,
-    drawn: body.drawn && ui.missionOpen && worldsLayer,
-    center: retardedPosition(body, worldPhases[body.id], camera.position.toArray(), settings.tilt).center,
+    phase: worldPhases[body.id],
+    drawn: (metric === 'kerr' ? body.radiusM / 2 >= 1.2 * photonOrbit(pictureSpin(settings.spinDelta)) : body.drawn) && ui.missionOpen && worldsLayer,
+    center: metric === 'kerr' ? worldEvent(body.radiusM / 2, worldPhases[body.id], 0, pictureSpin(settings.spinDelta)).x.map((_, i, x) => x[(i + 1) % 3])
+      : retardedPosition(body, worldPhases[body.id], camera.position.toArray(), settings.tilt).center,
   }));
   scene?.setWorlds(pictureWorlds);
   clock += simDt * dilation;
   const crewSeconds = crewStep(dt, settings.timeScale, missionRunning, paused);
   if (crewSeconds > 0) ledger = advanceLedger(ledger, crewSeconds, settings.spinDelta);
-  if (probe) updateProbe(probe, paused ? 0 : dt, settings.timeScale);
+  if (probe) (metric === 'kerr' ? updateKerrProbe : updateProbe)(probe, paused ? 0 : dt, settings.timeScale);
 
-  const qualityDecision = qualityController.feed(rawDt);
+  const qualityDecision = qualityPinned ? null : qualityController.feed(rawDt);
   fps = qualityController.fps;
   applyQuality(qualityDecision);
   try {
@@ -214,6 +293,22 @@ function animate(now) {
 }
 
 const debug = new URLSearchParams(window.location.search).get('debug') === '1' ? Object.freeze({
+  setQualityPinned(value) { if (typeof value === 'boolean') qualityPinned = value; },
+  setRenderBudget(maxPixels) {
+    if (!Number.isFinite(maxPixels) || maxPixels < 1) throw new RangeError('Positive pixel budget required');
+    // Bound UI-test fill rate independently of the real quality controller and CSS layout.
+    scene.debugResize ??= scene.resize.bind(scene);
+    scene.resize = () => {
+      scene.debugResize();
+      const width = window.innerWidth, height = window.innerHeight;
+      const ratio = Math.min(scene.renderer.getPixelRatio(), Math.sqrt(maxPixels / (width * height)));
+      scene.renderer.setPixelRatio(ratio);
+      scene.composer.setPixelRatio(ratio);
+      scene.uniforms.uResolution.value.set(Math.round(width * ratio), Math.round(height * ratio));
+      scene.uniforms.uPixelRatio.value = ratio;
+    };
+    scene.resize();
+  },
   setCamera: values => camera.setCamera(values),
   setLayers(values) {
     if (typeof values.worlds === 'boolean') worldsLayer = values.worlds;
@@ -227,7 +322,7 @@ const debug = new URLSearchParams(window.location.search).get('debug') === '1' ?
     for (const id of ['lantern', 'farShore']) if (Number.isFinite(values[id])) worldPhases[id] = values[id];
   },
   setSimulationTime(seconds) { if (Number.isFinite(seconds)) simulationTime = seconds; },
-  advanceProbe(dt) { if (probe) updateProbe(probe, dt, settings.timeScale); },
+  advanceProbe(dt) { if (probe) (metric === 'kerr' ? updateKerrProbe : updateProbe)(probe, dt, settings.timeScale); },
   advanceCrew(seconds) { ledger = advanceLedger(ledger, seconds, settings.spinDelta); },
   travel(location) { ledger = travelLedger(ledger, location); },
 }) : null;
@@ -235,16 +330,17 @@ const debug = new URLSearchParams(window.location.search).get('debug') === '1' ?
 // Debug mutation exists only behind the explicit flag; normal telemetry is copied.
 Object.defineProperty(window, 'eventHorizon', {
   configurable: true,
-  value: Object.freeze({ ...(debug ? { debug } : {}), getState: () => ({ settings: { ...settings }, camera: {
+  value: Object.freeze({ ...(debug ? { debug } : {}), getState: () => ({ metric, settings: { ...settings }, camera: {
     mode: camera.mode, radius: camera.radius, theta: camera.theta, elevation: camera.elevation,
-    dilation: timeDilation(camera.radius, settings.lensing), gazeYaw: camera.gazeYaw, gazePitch: camera.gazePitch,
+    dilation: referenceDilation(), gazeYaw: camera.gazeYaw, gazePitch: camera.gazePitch,
     shadowFraction: camera.shadowFraction,
   }, ledger: {
     location: ledger.location, homeSeconds: ledger.homeSeconds, crewSeconds: ledger.crewSeconds,
     bodySeconds: { ...ledger.bodySeconds },
   }, mission: { open: ui.missionOpen, running: missionRunning },
-  worlds: pictureWorlds.map(({ id, drawn, center, radius }) => ({ id, drawn, center: [...center], radius })),
-  probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })) } : null, paused, clock, simulationTime, fps, renderedFrames,
+  worlds: pictureWorlds.map(pictureWorldState),
+  probe: probe ? { ...probe, direction: [...probe.direction], trail: probe.trail.map(event => ({ ...event })),
+    ...(metric === 'kerr' ? { position: [...probe.position], flashEvents: probe.flashEvents.map(event => ({ ...event })) } : {}) } : null, paused, clock, simulationTime, fps, renderedFrames,
   exposure: scene?.meter.exposure,
   quality: scene?.quality, renderScale: scene?.scale, qualityMode: qualityController.qualityMode, frameCap: qualityController.frameCap }) }),
 });

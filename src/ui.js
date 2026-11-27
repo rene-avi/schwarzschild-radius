@@ -55,7 +55,7 @@ const controls = [
 ];
 
 /** DOM-only HUD. All simulation state is passed in and all input goes through callbacks. */
-export function createUI({ presets, initialPreset = 'gargantua', onPreset = () => {}, onChange = () => {}, onQuality = () => {}, onAction = () => {}, onTravel = () => {} }) {
+export function createUI({ presets, metric = 'schwarzschild', initialPreset = 'gargantua', onPreset = () => {}, onChange = () => {}, onQuality = () => {}, onAction = () => {}, onTravel = () => {} }) {
   const hud = document.createElement('div');
   hud.id = 'hud';
   const initialWorlds = worlds(presets[initialPreset].spinDelta);
@@ -136,6 +136,31 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
     <dialog class="help-dialog" aria-label="Keyboard shortcuts"><div class="dialog-heading"><span class="eyebrow">FLIGHT MANUAL</span><button class="close-help icon-button" aria-label="Close keyboard shortcuts">×</button></div><h2 tabindex="-1" autofocus>Explore the edge.</h2><p>Drag or use one finger to orbit; in flight, look freely. Scroll or pinch to zoom. F stops the approach; R restores the view.</p><dl>${SHORTCUTS.map(shortcut => `<div data-shortcut="${shortcut.code}"><dt>${shortcut.description}</dt><dd><kbd>${shortcut.label}</kbd></dd></div>`).join('')}</dl><p class="help-note">Spin sets disk rotation and beaming in the picture, which remains Schwarzschild; the Mission clocks use the Kerr metric for the selected spin.</p></dialog>
   `;
   document.body.append(hud);
+  const kerr = metric === 'kerr';
+  if (kerr) {
+    hud.classList.add('kerr-mode');
+    hud.querySelector('.top-center').innerHTML = '<span class="live-dot"></span> LIVE SIMULATION <span class="top-divider">/</span> KERR METRIC';
+    hud.querySelector('.object-coordinates').innerHTML = 'KERR GEOMETRY<span>PROCEDURAL · REAL TIME</span>';
+    hud.querySelector('.help-note').textContent = 'Kerr rays, orbiting worlds and a freely falling ZAMO-release probe; picture spin capped at 0.998. Mission clocks retain the selected spin. Fly in and cinematic require Schwarzschild mode. Probe telemetry uses the fixed drop receiver; no flash echo trail in Kerr mode.';
+    hud.querySelector('[data-action="probe"]').title = 'Release at r = 7 for any camera radius; fixed camera ZAMO receiver, including release blueshift for close views';
+    for (const action of ['fly', 'cinematic']) {
+      for (const button of hud.querySelectorAll(`[data-action="${action}"]`)) {
+        button.disabled = true;
+        button.title = 'Fly-in and cinematic flight paths use the Schwarzschild model';
+      }
+    }
+    for (const [key, note] of [['tilt', 'Kerr disk fixed to the equatorial plane (0°).'], ['lensing', 'Kerr mass fixed at M = 1/2.']]) {
+      const input = hud.querySelector(`#param-${key}`);
+      input.disabled = true;
+      input.title = `${note} Stored value retained.`;
+      const text = document.createElement('small');
+      text.className = 'metric-note';
+      text.textContent = `${note} Stored value retained.`;
+      input.after(text);
+    }
+    hud.querySelector('[data-readout="shadowFraction"]').closest('.metric').title = 'Schwarzschild shadow estimate unavailable for the Kerr picture';
+    hud.querySelector('.simulation-time').title = 'Kerr ZAMO camera clock; Mission uses exact Kerr orbit clocks';
+  }
   const events = new AbortController();
   const options = { signal: events.signal };
   const readouts = Object.fromEntries([...hud.querySelectorAll('[data-readout]')].map(el => [el.dataset.readout, el]));
@@ -224,7 +249,7 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
     const raw = controlPosition(c, value);
     inputs[c.key].value = raw;
     inputs[c.key].style.setProperty('--fill', `${Math.max(0, Math.min(100, (raw - c.min) / (c.max - c.min) * 100))}%`);
-    outputs[c.key].value = c.format(value);
+    outputs[c.key].value = kerr && c.key === 'spinDelta' && value <= 0.002 ? 'picture 0.998' : c.format(value);
     inputs[c.key].setAttribute('aria-valuetext', `${c.format(value)} ${c.unit}`);
   }
 
@@ -331,7 +356,8 @@ export function createUI({ presets, initialPreset = 'gargantua', onPreset = () =
     if (Number.isFinite(r.mass)) write('mass', compact(r.mass));
     if (Number.isFinite(r.radius)) write('radius', compact(r.radius / 1000));
     if (Number.isFinite(r.cameraDistance)) write('cameraDistance', r.cameraDistance.toFixed(2));
-    if (Number.isFinite(r.shadowFraction)) write('shadowFraction', (r.shadowFraction * 100).toFixed(1));
+    if (kerr) write('shadowFraction', '—');
+    else if (Number.isFinite(r.shadowFraction)) write('shadowFraction', (r.shadowFraction * 100).toFixed(1));
     if (Number.isFinite(r.dilation)) write('dilation', `τ / t ${r.dilation.toFixed(3)}`);
     if (Number.isFinite(r.clock)) write('clock', clock(r.clock));
     if (r.probeState !== undefined) {

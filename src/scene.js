@@ -4,7 +4,9 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
-import { vertexShader, fragmentShader } from './shaders/blackhole.js';
+import { vertexShader, fragmentShader, kerrFragmentShader } from './shaders/blackhole.js';
+import { pictureSpin, observerFrame, diskInnerRadius } from './kerrray.js';
+import { KERR_PROBE_KNOTS, probeWindow } from './kerrprobe.js';
 import { filmShader, meterShader, exposureTarget, smoothExposure } from './shaders/post.js';
 import { qualityForScale } from './quality.js';
 
@@ -66,8 +68,14 @@ class ExposurePass extends Pass {
   }
 }
 
+export function createRayMaterial(uniforms, metric = 'schwarzschild') {
+  return new THREE.ShaderMaterial({ vertexShader, fragmentShader: metric === 'kerr' ? kerrFragmentShader : fragmentShader,
+    uniforms, depthTest: false, depthWrite: false });
+}
+
 export class BlackHoleScene {
-  constructor(canvas, settings) {
+  constructor(canvas, settings, metric = 'schwarzschild') {
+    this.metric = metric;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', alpha: false });
     this.renderer.debug.checkShaderErrors = true;
     this.renderer.debug.onShaderError = (gl, program, vertex, fragment) => {
@@ -75,6 +83,10 @@ export class BlackHoleScene {
       throw new Error('The graphics driver could not compile the simulation shader.');
     };
     this.renderer.setClearColor(0x050608);
+    if (metric === 'kerr') {
+      const gl = this.renderer.getContext(), info = gl.getExtension('WEBGL_debug_renderer_info');
+      this.software = info && /swiftshader|llvmpipe/i.test(gl.getParameter(info.UNMASKED_RENDERER_WEBGL));
+    }
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.uniforms = {
@@ -106,8 +118,26 @@ export class BlackHoleScene {
       uProbeTrailAge: { value: Array(8).fill(0) },
       uProbeTrailCount: { value: 0 },
       uDiskIntensity: { value: 1 },
+      uKerrPosition: { value: new THREE.Vector3() },
+      uKerrObserver: { value: new THREE.Vector4() },
+      uKerrRadial: { value: new THREE.Vector4() },
+      uKerrPolar: { value: new THREE.Vector4() },
+      uKerrAzimuth: { value: new THREE.Vector4() },
+      uKerrScenePolar: { value: new THREE.Vector3() },
+      uKerrSceneAzimuth: { value: new THREE.Vector3() },
+      uKerrInner: { value: 3 },
     };
-    this.material = new THREE.ShaderMaterial({ vertexShader, fragmentShader, uniforms: this.uniforms, depthTest: false, depthWrite: false });
+    if (metric === 'kerr') Object.assign(this.uniforms, {
+      uKerrLapse: { value: 1 },
+      uKerrWorldPhase: { value: new THREE.Vector2() },
+      uKerrWorldOrbit: { value: new THREE.Vector2() },
+      uKerrProbeCount: { value: 0 },
+      uKerrProbeEvent: { value: Array.from({ length: KERR_PROBE_KNOTS }, () => new THREE.Vector4()) },
+      uKerrProbeU: { value: Array.from({ length: KERR_PROBE_KNOTS }, () => new THREE.Vector4()) },
+      uKerrProbeTau: { value: Array(KERR_PROBE_KNOTS).fill(0) },
+    });
+    if (this.software) this.uniforms.uQuality.value = 0;
+    this.material = createRayMaterial(this.uniforms, metric);
     this.geometry = new THREE.PlaneGeometry(2, 2);
     this.scene.add(new THREE.Mesh(this.geometry, this.material));
     this.composer = new EffectComposer(this.renderer);
@@ -140,7 +170,7 @@ export class BlackHoleScene {
     // The controller owns scale bounds, rounding and quality thresholds.
     const oldScale = this.scale;
     this.scale = scale;
-    this.uniforms.uQuality.value = qualityForScale(scale).qualityIndex;
+    this.uniforms.uQuality.value = this.software ? 0 : qualityForScale(scale).qualityIndex;
     if (oldScale !== this.scale) this.resize();
     return oldScale !== this.scale;
   }
@@ -154,6 +184,10 @@ export class BlackHoleScene {
       this.uniforms.uWorldCenter.value[i].fromArray(world.center);
       this.uniforms.uWorldRadius.value[i] = world.radius;
       this.uniforms.uWorldTint.value[i].fromArray(world.id === 'lantern' ? [0.43, 0.58, 0.78] : [0.83, 0.73, 0.50]);
+      if (this.metric === 'kerr') {
+        this.uniforms.uKerrWorldPhase.value.setComponent(i, world.phase);
+        this.uniforms.uKerrWorldOrbit.value.setComponent(i, world.radiusM / 2);
+      }
     });
   }
 
@@ -168,8 +202,31 @@ export class BlackHoleScene {
     u.uSpin.value = settings.spin;
     u.uTilt.value = settings.tilt;
     u.uLensing.value = settings.lensing;
+    if (this.metric === 'kerr') {
+      const spin = pictureSpin(settings.spinDelta);
+      const frame = observerFrame(camera.position.toArray(), spin);
+      u.uSpin.value = spin;
+      u.uTilt.value = 0;
+      u.uLensing.value = 1;
+      u.uKerrInner.value = diskInnerRadius(spin);
+      u.uKerrLapse.value = 1 / frame.ut;
+      u.uKerrPosition.value.fromArray(frame.position);
+      for (const [i, key] of ['uKerrObserver', 'uKerrRadial', 'uKerrPolar', 'uKerrAzimuth'].entries()) {
+        u[key].value.fromArray(frame.covectors[i]);
+      }
+      u.uKerrScenePolar.value.fromArray(frame.sceneBasis[1]);
+      u.uKerrSceneAzimuth.value.fromArray(frame.sceneBasis[2]);
+    }
     u.uDiskIntensity.value = 0.55 + settings.temperature / 12000;
-    if (probe && probe.state !== 'lost') {
+    if (this.metric === 'kerr') {
+      const knots = probe && probe.state !== 'lost' ? probeWindow(probe) : [];
+      u.uKerrProbeCount.value = knots.length;
+      knots.forEach((event, i) => {
+        u.uKerrProbeEvent.value[i].set(...event.x, event.t - probe.elapsed - probe.arrivalDelay);
+        u.uKerrProbeU.value[i].fromArray(event.u);
+        u.uKerrProbeTau.value[i] = event.tau;
+      });
+    } else if (probe && probe.state !== 'lost') {
       u.uProbePosition.value.fromArray(probe.direction).multiplyScalar(probe.radius);
       u.uProbeRadius.value = probe.radius;
       u.uProbeSignal.value = probe.signal;

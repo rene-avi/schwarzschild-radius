@@ -338,4 +338,5 @@ export const checks = [
       assert.deepEqual(audit.foreignRequests, []);
     },
   },
-];
+].map(check => check.name === 'no console errors or foreign-origin requests'
+  ? check : { ...check, uiOnly: true, reuse: true });

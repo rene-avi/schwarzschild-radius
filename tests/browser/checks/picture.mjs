@@ -150,6 +150,7 @@ export const checks = [
   },
   ...[{ width: 1440, height: 900 }, { width: 375, height: 812 }].map(viewport => ({
     name: `picture readable HUD at ${viewport.width} pixels`,
+    uiOnly: true, reuse: true,
     viewport,
     async run({ page, outDir }) {
       const narrow = viewport.width <= 760;

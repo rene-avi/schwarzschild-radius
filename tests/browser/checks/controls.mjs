@@ -11,7 +11,7 @@ const inputState = async page => {
   const { fps, renderedFrames, exposure, ...current } = await state(page);
   return current;
 };
-const assertInputState = (actual, expected, message) => {
+export const assertInputState = (actual, expected, message) => {
   const { camera, ...rest } = actual;
   const { camera: expectedCamera, ...expectedRest } = expected;
   assert.deepEqual(rest, expectedRest, message);

@@ -261,8 +261,8 @@ export const fragmentShader = /* glsl */ `
     // Renew eddies at zero blend weight so indefinite shear never erases all detail.
     float age = mod(uTime, 16.0);
     float blend = 0.5 - 0.5 * cos(age * (2.0 * PI / 16.0));
-    vec2 gas = mix(gasPattern(r, angle, mod(uTime + 8.0, 16.0) * rate, rayPlane, incidence, pixelFootprint),
-      gasPattern(r, angle, age * rate, rayPlane, incidence, pixelFootprint), blend);
+    vec2 gas = mix(gasPattern(r, angle, -mod(uTime + 8.0, 16.0) * rate, rayPlane, incidence, pixelFootprint),
+      gasPattern(r, angle, -age * rate, rayPlane, incidence, pixelFootprint), blend);
     float filament = gas.x;
     float density = gas.y;
     float aa = max(footprint * 0.5, 0.003);

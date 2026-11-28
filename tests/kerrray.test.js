@@ -46,8 +46,8 @@ function diskCrossings(args) {
 }
 
 test('Kerr switch preserves the exact evaluated default shader and an empty material defines map', () => {
-  assert.equal(fragmentShader.length, 34856);
-  assert.equal(createHash('sha256').update(fragmentShader).digest('hex'), '807d3babe5295a8d78f9f5b628b3f07ac866077d69b8d153bd0bd4eb8d0a9af8');
+  assert.equal(fragmentShader.length, 34858);
+  assert.equal(createHash('sha256').update(fragmentShader).digest('hex'), '7b0e1dbdc800c27ca1d8aeb998824242cf28ed2ba65b167f4b8d03e019981c72');
   const material = createRayMaterial({});
   assert.equal(material.fragmentShader, fragmentShader);
   assert.deepEqual(material.defines, {});

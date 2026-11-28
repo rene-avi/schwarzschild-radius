@@ -187,7 +187,8 @@ export class ObservatoryCamera {
       this.flyElapsed = 0;
       this.hovering = false;
     }
-    this.radius = MathUtils.lerp(this.radius, this.desiredRadius, smooth);
+    // Equal endpoints must stay bitwise fixed regardless of the frame interval.
+    if (this.radius !== this.desiredRadius) this.radius = MathUtils.lerp(this.radius, this.desiredRadius, smooth);
     if (this.hovering && Math.abs(this.radius - this.minimum) < 0.00001) this.radius = this.desiredRadius = this.minimum;
     if (this.mode === 'fly') {
       // The extra degree lets an initially low path ease above the clearance before reaching the disk.
@@ -209,8 +210,8 @@ export class ObservatoryCamera {
       this.flyGazeTime += dt;
       this.automaticGaze = MathUtils.lerp(this.flyGazeStart, this.flySide * approachGaze(this.radius, this.minimum, 1.5 * this.lensing), ease(this.flyGazeTime / 1.5));
     } else {
-      this.theta = MathUtils.lerp(this.theta, this.desiredTheta, smooth);
-      this.elevation = MathUtils.lerp(this.elevation, this.desiredElevation, smooth);
+      if (this.theta !== this.desiredTheta) this.theta = MathUtils.lerp(this.theta, this.desiredTheta, smooth);
+      if (this.elevation !== this.desiredElevation) this.elevation = MathUtils.lerp(this.elevation, this.desiredElevation, smooth);
     }
     this.gazeYaw = this.freeYaw;
     this.gazePitch = this.automaticGaze + this.freePitch;
